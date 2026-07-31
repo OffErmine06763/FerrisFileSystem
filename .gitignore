@@ -1,0 +1,9 @@
+# platform
+.vs
+
+# language
+target
+Cargo.lock
+
+# custom
+disks
