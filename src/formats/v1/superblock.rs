@@ -18,16 +18,17 @@ pub struct Superblock {
 	pub inode_table_blocks: u32,
 
 	pub data_start: u32,
+	pub root_inode: u32,
 }
 
 impl Superblock {
-	pub fn new(magic: u64, version: u32, block_size: u32, total_blocks: u32, inode_bitmap_blocks: u32, block_bitmap_blocks: u32, inode_table_blocks: u32) -> Self {
+	pub fn new(magic: u64, version: u32, block_size: u32, total_blocks: u32, inode_bitmap_blocks: u32, block_bitmap_blocks: u32, inode_table_blocks: u32, root_inode: u32) -> Self {
 		let inode_bitmap_start = 1; // superblock
 		let block_bitmap_start = inode_bitmap_start + inode_bitmap_blocks;
 		let  inode_table_start = block_bitmap_start + block_bitmap_blocks;
 		let         data_start =  inode_table_start + inode_table_blocks;
 
-		Self { magic, version, block_size, total_blocks, inode_bitmap_start, inode_bitmap_blocks, block_bitmap_start, block_bitmap_blocks, inode_table_start, inode_table_blocks, data_start }
+		Self { magic, version, block_size, total_blocks, inode_bitmap_start, inode_bitmap_blocks, block_bitmap_start, block_bitmap_blocks, inode_table_start, inode_table_blocks, data_start, root_inode }
 	}
 
 	pub fn serialize(&self, buf: &mut [u8; BLOCK_SIZE]) {
@@ -56,6 +57,7 @@ impl Superblock {
 		write_field!(self.inode_table_blocks);
 
 		write_field!(self.data_start);
+		write_field!(self.root_inode);
 	}
 
 	pub fn deserialize(buf: &[u8]) -> Self {
@@ -91,6 +93,7 @@ impl Superblock {
 			inode_table_blocks: read_field!(u32),
 
 			data_start: read_field!(u32),
+			root_inode: read_field!(u32),
 		}
 	}
 
@@ -132,11 +135,15 @@ impl Superblock {
 		println!("version:      {}", self.version);
 		println!("block size:   {}", self.block_size);
 		println!("total blocks: {}", self.total_blocks);
+		println!("root inode:   {}", self.root_inode);
 
 
 		println!();
 		println!("Info");
 		println!("====");
-		println!("number of inodes: {} ({} per block)", self.inode_table_blocks * INode::inodes_per_block(), INode::inodes_per_block());
+		println!("number of inodes:      {} ({} per block)", self.inode_table_blocks * INode::inodes_per_block(), INode::inodes_per_block());
+		let data_blocks = self.total_blocks - self.inode_bitmap_blocks - self.inode_table_blocks - self.block_bitmap_blocks - 1;
+		println!("number of data blocks: {}", data_blocks);
+
 	}
 }

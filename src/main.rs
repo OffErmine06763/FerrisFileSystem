@@ -23,9 +23,6 @@ fn main() -> io::Result<()> {
 	FormatV1::format(&mut device)?;
 	let mut ffs = FFS::mount(device)?;
 	ffs.create_file("path")?;
-	ffs.create_file("path")?;
-	ffs.create_file("path")?;
-	ffs.create_file("path")?;
 	ffs.save(path)?;
 
 

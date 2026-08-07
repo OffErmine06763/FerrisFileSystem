@@ -35,18 +35,34 @@ pub struct INode {
 	pub modified: u64,
 
 	pub links: u16,
+	pub blocks: u16,
 }
 
 
 impl INode {
+	pub fn on_disk_size() -> usize {
+		const _: () = assert!(std::mem::size_of::<INode>() >= 80, "allocated memory size insufficient for storing the inode");
+		return 80;
+	}
 	pub fn inodes_per_block() -> u32 {
-		(BLOCK_SIZE / std::mem::size_of::<INode>()) as u32
+		(BLOCK_SIZE / Self::on_disk_size()) as u32
 	}
 
 
 	pub fn empty(file_type: FileType, permissions: u16, created: u64) -> Self {
-		Self { size: 0, file_type, permissions, direct: [0u32; 12], indirect: 0, created, modified: created, links: 1 }
+		Self { size: 0, file_type, permissions, direct: [INVALID_ADDRESS; 12], indirect: 0, created, modified: created, links: 1, blocks: 0 }
 	}
+
+
+	pub fn add_block(&mut self, block: u32) {
+		if self.blocks >= 12 {
+			todo!();
+		}
+
+		self.direct[self.blocks as usize] = block;
+		self.blocks += 1;
+	}
+
 
 	pub fn serialize(&self, buf: &mut [u8; BLOCK_SIZE]) {
 		let mut offset = 0;
@@ -62,10 +78,11 @@ impl INode {
 		write_field!(self.size);
 		write_field!(self.file_type);
 
-		// padding
-		buf[offset..offset + 1].copy_from_slice(&[0]);
-		offset += 1;
+		let pad = 0u8;
+		write_field!(pad);
 		write_field!(self.permissions);
+		write_field!(self.links);
+		write_field!(self.blocks);
 
 		for i in self.direct {
 			write_field!(i);
@@ -74,8 +91,6 @@ impl INode {
 
 		write_field!(self.created);
 		write_field!(self.modified);
-
-		write_field!(self.links);
 	}
 
 	pub fn deserialize(buf: &[u8]) -> Self {
@@ -96,10 +111,12 @@ impl INode {
 
 		
 		let size = read_field!(u64);
+		read_field!(u8);
 		let file_type = read_field!(FileType);
 
-		read_field!(u16); // padding
 		let permissions = read_field!(u16);
+		let links = read_field!(u16);
+		let blocks = read_field!(u16);
 
 		let mut direct = [0u32; 12];
 		for i in 0..12 {
@@ -111,7 +128,7 @@ impl INode {
 			indirect: read_field!(u32),
 			created: read_field!(u64),
 			modified: read_field!(u64),
-			links: read_field!(u16),
+			links, blocks,
 		}
 	}
 
