@@ -75,7 +75,6 @@ impl BitmapAllocator {
 		//! for optimal performance, keep close together the indices that are located in the same bitmap block.
 		//! ideally just pass the result of find_free().
 		self.modify(device, blocks, |byte, bit| *byte |= 1 << bit)
-
 	}
 
 	pub fn deallocate<D: BlockDevice>(&mut self, device: &mut D, blocks: &Vec<u32>) -> io::Result<()> {
@@ -144,4 +143,121 @@ impl BitmapAllocator {
 
 		Ok(())
 	}
+}
+
+
+
+
+
+
+
+
+
+
+#[test]
+fn bitmap_allocator() -> io::Result<()> {
+	use crate::device::memory_device::*;
+
+	// 2 blocks for the bitmap, starting at 6th block, that excludes the last 10 bits
+	let mut allocator = BitmapAllocator::new(5, 2, BLOCK_SIZE as u32 * 2 * 8 - 10);
+	let mut device = MemoryDevice::empty(10);
+	let mut buf = [0u8; BLOCK_SIZE];
+	let mut expected = [0u8; BLOCK_SIZE];
+	
+	// manually allocate bit 50 in both bitmap blocks and others in the first.
+	let mut blocks = vec![50u32, BLOCK_SIZE as u32 * 8 + 50, 5, 2, 60, 3];
+	allocator.allocate(&mut device, &blocks)?;
+
+	device.read_block(5, &mut buf)?;
+	expected[50 / 8] |= 1 << (50 % 8); expected[5 / 8] |= 1 << (5 % 8); expected[2 / 8] |= 1 << (2 % 8); expected[60 / 8] |= 1 << (60 % 8); expected[3 / 8] |= 1 << (3 % 8);
+	assert_eq!(buf, expected);
+	
+	device.read_block(6, &mut buf)?;
+	expected = [0u8; BLOCK_SIZE];
+	expected[50 / 8] = 1 << (50 % 8);
+	assert_eq!(buf, expected);
+
+	// find and allocate 5 blocks, note that there is no guarantee on where they will be allocated
+	// so we can only count the number of 1s in the bitmap.
+	let expected = blocks.len() + 5;
+	blocks = allocator.find_free(&mut device, 5)?;
+	assert_eq!(blocks.len(), 5);
+	allocator.allocate(&mut device, &blocks)?;
+
+	let mut actual = 0;
+	device.read_block(5, &mut buf)?;
+	for i in 0..BLOCK_SIZE {
+		for j in 0..8 {
+			if (buf[i] & (1 << j)) != 0 { actual += 1; }
+		}
+	}
+	device.read_block(6, &mut buf)?;
+	for i in 0..BLOCK_SIZE {
+		for j in 0..8 {
+			if i * 8 + j + BLOCK_SIZE * 8 >= BLOCK_SIZE * 2 * 8 - 10 {
+				assert!(buf[i] & (1 << j) == 0);
+			}
+			else {
+				if (buf[i] & (1 << j)) != 0 { actual += 1; }
+			}
+		}
+	}
+	
+	assert_eq!(actual, expected);
+
+
+	// allocate one block 
+	let allocated = allocator.find_allocate(&mut device)?;
+	assert!(allocated < BLOCK_SIZE as u32 * 2 - 10);
+	if allocated < BLOCK_SIZE as u32 { device.read_block(5, &mut buf)?; }
+	else { device.read_block(6, &mut buf)?; }
+	assert_eq!(buf[allocated as usize / 8], 1 << (allocated % 8));
+
+	// TODO: as of now it doesn't check whether the address is in valid range
+	//       also it doen't check whether it isn't allocated already.
+	// try to allocate past the end
+	//let res = allocator.allocate(&mut device, &vec![BLOCK_SIZE as u32 * 2 * 8 - 10]).unwrap_err();
+	//assert_eq!(res.kind(), io::ErrorKind::InvalidInput);
+	//assert_eq!(res.to_string(), "block out of range");
+	//let res = allocator.allocate(&mut device, &vec![BLOCK_SIZE as u32 * 2 * 8 -  5]).unwrap_err();
+	//assert_eq!(res.kind(), io::ErrorKind::InvalidInput);
+	//assert_eq!(res.to_string(), "block out of range");
+	//let res = allocator.allocate(&mut device, &vec![BLOCK_SIZE as u32 * 2 * 8 + 10]).unwrap_err();
+	//assert_eq!(res.kind(), io::ErrorKind::InvalidInput);
+	//assert_eq!(res.to_string(), "block out of range");
+
+	// allocate all the available blocks
+	blocks = allocator.find_free(&mut device, BLOCK_SIZE as u32 * 2 * 8)?;
+	// number of bits - allocated with find_free - allocated with find_allocate - 10 (invalid bits at the end)
+	assert_eq!(blocks.len(), BLOCK_SIZE * 2 * 8 - actual - 1 - 10);
+	allocator.allocate(&mut device, &blocks)?;
+
+	// allocate in the full bitmap
+	let res = allocator.find_allocate(&mut device).unwrap_err();
+	assert_eq!(res.kind(), io::ErrorKind::StorageFull);
+	assert_eq!(res.to_string(), BitmapAllocator::ERR_MAPPED_REGION_FULL);
+
+	// find free in the full bitmap
+	blocks = allocator.find_free(&mut device, 5)?;
+	assert_eq!(blocks.len(), 0);
+
+	// deallocate one block
+	allocator.deallocate(&mut device, &vec![0])?;
+	device.read_block(5, &mut buf)?;
+	assert_eq!(buf[0], 0b11111110);
+
+
+	// allocate in a full bitmap where all bits are valid addresses
+	let mut allocator = BitmapAllocator::new(5, 1, BLOCK_SIZE as u32 * 8);
+	let mut device = MemoryDevice::empty(10);
+
+	blocks = allocator.find_free(&mut device, BLOCK_SIZE as u32 * 8)?;
+	allocator.allocate(&mut device, &blocks)?;
+
+	let res = allocator.find_allocate(&mut device).unwrap_err();
+	assert_eq!(res.kind(), io::ErrorKind::StorageFull);
+	assert_eq!(res.to_string(), BitmapAllocator::ERR_BITMAP_FULL);
+
+
+	Ok(())
 }

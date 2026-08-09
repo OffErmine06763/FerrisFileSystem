@@ -26,11 +26,11 @@ impl<D: BlockDevice> FFS<D> {
 		Ok(Self { device, format })
 	}
 
-	pub fn create_file(&mut self, path: &str) -> io::Result<()> {
-		self.format.create_file(&mut self.device, path)
+	pub fn create_file(&mut self, path: &str, file_type: FileType) -> io::Result<()> {
+		self.format.create_file(&mut self.device, path, file_type)
 	}
-	pub fn delete_file(&mut self) {
-		self.format.delete_file();
+	pub fn delete_file(&mut self, path: &str) -> io::Result<()> {
+		self.format.delete_file(&mut self.device, path)
 	}
 	pub fn read(&mut self, inode: u32, buf: &mut [u8]) {
 		self.format.read(inode, buf);

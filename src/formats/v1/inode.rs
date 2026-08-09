@@ -1,10 +1,6 @@
 use crate::fs_utils::*;
 
-pub enum FileType {
-	File,
-	Directory,
-	Symlink,
-}
+
 
 impl FileType {
 	pub fn to_le_bytes(&self) -> [u8; 1] {
@@ -111,8 +107,9 @@ impl INode {
 
 		
 		let size = read_field!(u64);
-		read_field!(u8);
 		let file_type = read_field!(FileType);
+		
+		read_field!(u8);
 
 		let permissions = read_field!(u16);
 		let links = read_field!(u16);

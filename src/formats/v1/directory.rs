@@ -1,5 +1,4 @@
 use crate::fs_utils::*;
-use super::inode::FileType;
 
 use std::io;
 
@@ -15,8 +14,7 @@ use std::io;
 pub struct DirEntry {
 	pub inode: u32,
 	pub file_type: FileType,
-	/// length of the entry on the device.
-	/// could be greater than the strict minimum required, to avoid internal fragmentation on deletions
+	/// length of the entry on the device (or of the free region)
 	pub record_len: u16,
 	pub name_len: u16,
 	pub name: [u8; Self::MAX_NAME],
@@ -27,19 +25,22 @@ impl DirEntry {
 
 	pub fn new(inode: u32, file_type: FileType, name: &str) -> Self {
 		//! returns a new entry, with record_len equal to the minimum device memory necessary to store it (plus alignment)
-		Self::new_sized(inode, file_type, name, 0)
-	}
-	pub fn new_sized(inode: u32, file_type: FileType, name: &str, record_len: u16) -> Self {
-		//! returns a new entry with specified record_len if >= the minimum necessary to store it
-		//! otherwise record_len is equal to that minimum.
 		let mut name_arr = [0u8; 64];
 		let bytes = name.as_bytes();
 
 		let name_len = bytes.len().min(name_arr.len());
 		name_arr[..name_len].copy_from_slice(&bytes[..name_len]);
 
-		let record_len = record_len.max(Self::min_record_len(name_len as u16));
+		let record_len = Self::min_record_len(name_len as u16);
 		Self { inode, file_type, record_len, name_len: name_len as u16, name: name_arr }
+	}
+	pub fn free(size: u16) -> Self {
+		//! create an entry that represents a free region
+		Self { inode: INVALID_ADDRESS, file_type: FileType::File, record_len: size, name_len: 0, name: [0u8; Self::MAX_NAME] }
+	}
+
+	pub fn is_free(&self) -> bool {
+		return self.inode == INVALID_ADDRESS;
 	}
 
 
@@ -108,45 +109,45 @@ impl DirEntry {
 pub struct Directory {
 	pub inode: u32,
 	pub entries: Vec<DirEntry>,
-	pub initialized: bool,
 }
 
 impl Directory {
 	pub fn new(inode: u32, parent: u32) -> Self {
 		let self_entry = DirEntry::new(inode, FileType::Directory, ".");
-		let parent_entry = DirEntry::new_sized(parent, FileType::Directory, "..", BLOCK_SIZE as u16 - self_entry.record_len);
+		let parent_entry = DirEntry::new(parent, FileType::Directory, "..");
+		let free_entry = DirEntry::free(BLOCK_SIZE as u16 - self_entry.record_len - parent_entry.record_len);
 
-		Self { inode, entries: Vec::<DirEntry>::from([self_entry, parent_entry]), initialized: false }
+		Self { inode, entries: Vec::<DirEntry>::from([self_entry, parent_entry, free_entry]) }
 	}
 
-	pub fn lookup(&self, name: &str) -> Option<u32> {
-		Option::Some(1)
-	}
+	//pub fn lookup(&self, name: &str) -> Option<u32> {
+	//	Option::Some(1)
+	//}
 
-	pub fn insert(
-		&mut self,
-		name: &str,
-		inode: u32,
-	) -> io::Result<()> {
-		Ok(())
-	}
+	//pub fn insert(
+	//	&mut self,
+	//	name: &str,
+	//	inode: u32,
+	//) -> io::Result<()> {
+	//	Ok(())
+	//}
 
-	pub fn remove(
-		&mut self,
-		name: &str,
-	) -> io::Result<()> {
-		Ok(())
-	}
+	//pub fn remove(
+	//	&mut self,
+	//	name: &str,
+	//) -> io::Result<()> {
+	//	Ok(())
+	//}
 
-	pub fn rename(
-		&mut self,
-		old: &str,
-		new: &str,
-	) -> io::Result<()> {
-		Ok(())
-	}
+	//pub fn rename(
+	//	&mut self,
+	//	old: &str,
+	//	new: &str,
+	//) -> io::Result<()> {
+	//	Ok(())
+	//}
 
-	pub fn list(&self) -> Vec<DirEntry> {
-		Vec::<DirEntry>::new()
-	}
+	//pub fn list(&self) -> Vec<DirEntry> {
+	//	Vec::<DirEntry>::new()
+	//}
 }

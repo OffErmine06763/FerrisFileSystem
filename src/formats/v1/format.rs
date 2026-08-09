@@ -2,7 +2,7 @@ use crate::fs_utils::*;
 use crate::formats::format::FsFormat;
 use crate::device::block_device::BlockDevice;
 
-use super::inode::{INode, FileType};
+use super::inode::INode;
 use super::superblock::Superblock;
 use super::inode_handler::INodeTableHandler;
 use super::bitmap_allocator::BitmapAllocator;
@@ -24,66 +24,125 @@ pub struct FormatV1 {
 
 
 impl<D: BlockDevice> FsFormat<D> for FormatV1 {
-	fn create_file(&mut self, device: &mut D, path_str: &str) -> io::Result<()> {
+	fn create_file(&mut self, device: &mut D, path_str: &str, file_type: FileType) -> io::Result<()> {
 		// TODO: if any operation fails after the allocation, we should dealloc those blocks.
 
+		// find parent directory and create new entry
 		let path = Path::new(path_str);
 		let parent = path.parent().unwrap(); // TODO: handle ill formatted paths
 		let filename = path.file_name().unwrap().to_str().unwrap();
 
-		let dir_inode_ind: u32 = self.directory_handler.traverse(device, parent, self.superblock.root_inode)?;
-		let mut dir_inode = self.inode_handler.read_inode(device, dir_inode_ind)?;
+		let parent_inode_ind: u32 = self.directory_handler.traverse(device, parent, self.superblock.root_inode, &self.inode_handler)?;
+		let mut parent_inode = self.inode_handler.read_inode(device, parent_inode_ind)?;
 
-		let mut entry = DirEntry::new(INVALID_ADDRESS, FileType::File, filename);
-		let fit_result = self.directory_handler.can_fit(device, &dir_inode, &mut entry)?;
+		let mut entry = DirEntry::new(INVALID_ADDRESS, file_type.clone(), filename);
+		let fit_result = self.directory_handler.can_fit(device, &parent_inode, &mut entry)?;
 		
 
 		// allocate blocks
 		let inodes_to_alloc = 1;
-		let data_to_alloc = if fit_result != None { 1 } else { 2 };
+		let file_blocks = match file_type {
+			FileType::Directory => 1,
+			FileType::File => 0,
+			FileType::Symlink => todo!()
+		};
+		let data_to_alloc = file_blocks + if fit_result != None { 0 } else { 1 };
 		let (allocated_inodes, allocated_data) = self.allocate(device, inodes_to_alloc, data_to_alloc)?;
 
 		let inode_index = allocated_inodes[0];
-		let block_addr  = self.superblock.data_start + allocated_data[0];
-		let inode = INode::empty(FileType::File, u16::MAX, u32::MAX as u64);
+		
+		// create inode
+		let mut inode = INode::empty(file_type, u16::MAX, u32::MAX as u64);
 		entry.inode = inode_index;
+
+		if file_type == FileType::Directory {
+			inode.add_block(allocated_data[0]);
+		}
+		inode.size = match file_type {
+			FileType::Directory => BLOCK_SIZE as u64 * inode.blocks as u64,
+			FileType::File => 0,
+			FileType::Symlink => todo!()
+		};
 
 
 		// write inode and file contents
 		self.inode_handler.write_inode(device, inode_index, &inode)?;
-		let buf = [1u8; BLOCK_SIZE];
-		device.write_block(block_addr, &buf)?;
+		if file_type == FileType::Directory {
+			let new_dir = Directory::new(inode_index, parent_inode_ind);
+			self.directory_handler.write_directory_with_inode(device, &new_dir, &inode)?;
+		}
 
 
 		// write directory entry
+		let entry_block;
+		let entry_offset;
+
 		if fit_result == None {
-			dir_inode.size += BLOCK_SIZE as u64;
-			dir_inode.add_block(allocated_data[1]);
-			self.directory_handler.add_entry_grow(device, &dir_inode, &mut entry, allocated_data[1]);
-			self.inode_handler.write_inode(device, dir_inode_ind, &dir_inode)?;
+			entry_block = allocated_data[1];
+			entry_offset = 0;
+
+			parent_inode.size += BLOCK_SIZE as u64;
+			parent_inode.add_block(entry_block);
+			self.directory_handler.add_entry_grow(device, &parent_inode, &mut entry, entry_block)?;
+			self.inode_handler.write_inode(device, parent_inode_ind, &parent_inode)?;
 		}
 		else {
-			let (block, entry_to_shrink) = fit_result.unwrap();
-			self.directory_handler.add_entry_here(device, &dir_inode, &mut entry, block, entry_to_shrink);
+			(entry_block, entry_offset) = fit_result.unwrap();
+			self.directory_handler.add_entry_here(device, &parent_inode, &mut entry, entry_block, entry_offset)?;
 		}
 
 
 		#[cfg(debug_assertions)]
 		{
-			println!("Created file '{}'", path);
-			println!("data block: {} (0x{:08X})", block_addr, block_addr as u64 * BLOCK_SIZE as u64);
-			println!("inode index: {}", inode_index);
-			let inode_block = inode_index / INode::inodes_per_block();
-			println!("inode block: {} (0x{:08X})", inode_block, inode_block as u64 * BLOCK_SIZE as u64);
+			match file_type {
+				FileType::Directory => println!("Created directory '{}'", path_str),
+				FileType::File      => println!("Created file '{}'", path_str),
+				FileType::Symlink   => todo!(),
+			}
 			println!();
-			// TODO: add more info
+
+			println!("{:<20} {:>12} {:>10} {:>12}", "Entry", "Index/Offset", "Block", "Address");
+			println!("{}", "-".repeat(58));
+
+			if file_type == FileType::Directory {
+				let block_index = allocated_data[0];
+				let data_block = self.superblock.data_start + block_index;
+
+				let data_addr = data_block as u64 * BLOCK_SIZE as u64;
+				println!("{:<20} {:>12} {:>10}   0x{:08X}",
+					"Directory Data Block", block_index, data_block, data_addr,
+				);
+			}
+
+			let inode_block = self.superblock.inode_table_start + inode_index / INode::inodes_per_block();
+			let inode_addr = inode_block as u64 * BLOCK_SIZE as u64 + inode_index as u64 % INode::inodes_per_block() as u64 * INode::on_disk_size() as u64;
+			println!("{:<20} {:>12} {:>10}   0x{:08X}",
+				"Inode", inode_index, inode_block, inode_addr,
+			);
+
+			let dir_inode_block = self.superblock.inode_table_start + parent_inode_ind / INode::inodes_per_block();
+			let dir_inode_addr = dir_inode_block as u64 * BLOCK_SIZE as u64 + parent_inode_ind as u64 % INode::inodes_per_block() as u64 * INode::on_disk_size() as u64;
+			println!("{:<20} {:>12} {:>10}   0x{:08X}",
+				"Parent Inode", parent_inode_ind, dir_inode_block, dir_inode_addr,
+			);
+
+			let entry_block = self.superblock.data_start + entry_block;
+			println!("{:<20} {:>12} {:>10}   0x{:08X}",
+				"Parent Entry", entry_offset, entry_block, entry_block as u64 * BLOCK_SIZE as u64 + entry_offset as u64,
+			);
+
+			println!();
 		}
 
 		Ok(())
 	}
-	fn delete_file(&mut self) {
+
+	
+
+	fn delete_file(&mut self, device: &mut D, path: &str) -> io::Result<()> {
 		todo!()
 	}
+
 
 	fn read(&mut self, inode: u32, buf: &mut [u8]) {
 		todo!()
@@ -103,8 +162,8 @@ impl FormatV1 {
 	fn allocate<D: BlockDevice>(&mut self, device: &mut D, inodes: u32, data: u32) -> io::Result<(Vec<u32>, Vec<u32>)> {
 		//! returns a vector containing the indices of the allocated blocks, first the inodes, then the data blocks.
 		//! succeeds only if all the requested allocations succeed.
-		let mut inode_inds: Vec<u32> = self.inode_allocator.find_free(device, inodes)?;
-		let mut data_inds: Vec<u32> = self.block_allocator.find_free(device, data)?;
+		let inode_inds: Vec<u32> = self.inode_allocator.find_free(device, inodes)?;
+		let data_inds: Vec<u32> = self.block_allocator.find_free(device, data)?;
 
 		if inode_inds.len() < inodes as usize {
 			return Err(io::Error::new(io::ErrorKind::StorageFull, "not enough free inodes"));
@@ -222,25 +281,6 @@ impl FormatV1 {
 		}
 
 		Ok(())
-
-		/*
-		let s = "inode bitmap";
-		buf[..s.len()].copy_from_slice(s.as_bytes());
-		buf[s.len()..].fill(0);
-		device.write_block(superblock.inode_bitmap_start, &buf)?;
-		let s = "block bitmap";
-		buf[..s.len()].copy_from_slice(s.as_bytes());
-		buf[s.len()..].fill(0);
-		device.write_block(superblock.block_bitmap_start, &buf)?;
-		let s = "inode table";
-		buf[..s.len()].copy_from_slice(s.as_bytes());
-		buf[s.len()..].fill(0);
-		device.write_block(superblock.inode_table_start, &buf)?;
-		let s = "data blocks";
-		buf[..s.len()].copy_from_slice(s.as_bytes());
-		buf[s.len()..].fill(0);
-		device.write_block(superblock.data_start, &buf)?;
-		*/
 	}
 }
 

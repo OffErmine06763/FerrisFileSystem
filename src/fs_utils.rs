@@ -2,6 +2,12 @@ pub const MAGIC: u64 = 0x2E2E616E616E6162;
 pub const BLOCK_SIZE: usize = 256;
 pub const INVALID_ADDRESS: u32 = u32::MAX;
 
+#[derive(PartialEq, Clone, Copy)]
+pub enum FileType {
+	File,
+	Directory,
+	Symlink,
+}
 
 pub enum Version {
 	V1,

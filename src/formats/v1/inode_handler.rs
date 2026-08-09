@@ -41,7 +41,20 @@ impl INodeTableHandler {
 	}
 
 	pub fn read_inode<D: BlockDevice>(&self, device: &mut D, index: u32) -> io::Result<INode> {
-		let inode = INode::empty(FileType::Directory, 1, 1);
+		let inode_block = self.inode_table_start + index / INode::inodes_per_block();
+		let offset = index % INode::inodes_per_block();
+		
+		let mut block = [0u8; BLOCK_SIZE];
+		device.read_block(inode_block, &mut block)?;
+		
+		let size = INode::on_disk_size();
+		let start = offset as usize * size;
+		let end = start as usize + size;
+		
+		let mut buf = [0u8; BLOCK_SIZE];
+		buf[0..size].copy_from_slice(&block[start..end]);
+		let inode = INode::deserialize(&buf);
+		
 		Ok(inode)
 	}
 }
