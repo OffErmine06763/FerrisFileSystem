@@ -2,12 +2,30 @@ pub const MAGIC: u64 = 0x2E2E616E616E6162;
 pub const BLOCK_SIZE: usize = 256;
 pub const INVALID_ADDRESS: u32 = u32::MAX;
 
-#[derive(PartialEq, Clone, Copy)]
+
+#[derive(PartialEq, Clone, Copy, Debug)]
 pub enum FileType {
 	File,
 	Directory,
 	Symlink,
 }
+impl FileType {
+	pub fn to_le_bytes(&self) -> [u8; 1] {
+		match self {
+			FileType::File      => { [0; 1] }
+			FileType::Directory => { [1; 1] }
+			FileType::Symlink   => { [2; 1] }
+		}
+	}
+	pub fn from_le_bytes(buf: &[u8; 1]) -> Self {
+		match buf[0] {
+			0 => { FileType::File      }
+			1 => { FileType::Directory }
+			_ => { FileType::Symlink   }
+		}
+	}
+}
+
 
 pub enum Version {
 	V1,

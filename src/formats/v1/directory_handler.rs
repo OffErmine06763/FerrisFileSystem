@@ -20,11 +20,56 @@ impl DirectoryHandler {
 	}
 
 
+
+	pub fn find<D: BlockDevice>(&self, device: &mut D, dir_inode: &INode, name: &[u8]) -> io::Result<Option<(DirEntry, u32, usize)>> {
+		//! returns the DirEntry named 'name' in the specified directory, with RELATIVE data block index and offset in it where the entry is located.
+		//! note: does not check for record length validity, unlike lookup, since this is used to find the entry, rather than the inode it points to.
+
+		let mut res: io::Result<Option<(DirEntry, u32, usize)>> = Ok(None);
+		
+		self.iterate(device, dir_inode, |entry: DirEntry, block: u32, offset: usize| -> bool {
+			if entry.name[0..entry.name_len as usize] == *name {
+				res = Ok(Some((entry, block, offset)));
+				return true;
+			}
+
+			return false;
+		})?;
+
+		return res;
+	}
+
+
+	pub fn lookup<D: BlockDevice>(&self, device: &mut D, dir_inode: &INode, name: &[u8]) -> io::Result<u32> {
+		//! returns the RELATIVE inode index of the file named 'name' in the specified directory.
+		//! if not present, returns INVALID_ADDRESS.
+		//! throws: InvalidData if the entry has record_len == 0
+
+		let mut res: io::Result<u32> = Ok(INVALID_ADDRESS);
+		
+		self.iterate(device, dir_inode, |entry: DirEntry, _block: u32, _offset: usize| -> bool {
+			if entry.is_free() { return false; }
+			if entry.record_len == 0 {
+				res = Err(io::Error::new(io::ErrorKind::InvalidData, "directory entry has zero record length"));
+				return true;
+			}
+			
+			if entry.name[0..entry.name_len as usize] == *name {
+				res = Ok(entry.inode);
+				return true;
+			}
+
+			return false;
+		})?;
+
+		return res;
+	}
+
+
 	pub fn traverse<D: BlockDevice>(&self, device: &mut D, path: &Path, root: u32, inode_handler: &INodeTableHandler) -> io::Result<u32> {
 		//! starting from the given root directory, returns the directory "root/path/"
+		//! throws: NotFound or NotADirectory
 		
-		let mut buf = [0u8; BLOCK_SIZE];
-
 		let mut cur_inode = root;
 		let mut cur_dir = inode_handler.read_inode(device, root)?;
 		
@@ -34,42 +79,17 @@ impl DirectoryHandler {
 			if comp == Component::CurDir || comp == Component::RootDir { continue; }
 
 			let comp_name = Self::path_component_bytes(&comp);
-			let mut found = false;
 
-			// for every block used by the current directory
-			for block in 0..cur_dir.blocks {
-				let absolute_block = cur_dir.direct[block as usize] + self.data_start;
-				device.read_block(absolute_block, &mut buf)?;
-
-				// parse all the entries
-				let mut offset = 0;
-				while offset < BLOCK_SIZE {
-					let parsed = DirEntry::deserialize(&buf, offset);
-					if parsed.is_free() { continue; }
-					if parsed.record_len == 0 {
-						return Err(io::Error::new(io::ErrorKind::InvalidData, "directory entry has zero record length"));
-					}
-
-					if parsed.name[0..parsed.name_len as usize] == *comp_name {
-						cur_inode = parsed.inode;
-						cur_dir = inode_handler.read_inode(device, parsed.inode)?;
-
-						if cur_dir.file_type != FileType::Directory {
-							return Err(io::Error::new(io::ErrorKind::NotADirectory, "path component is not a directory"));
-						}
-
-						found = true;
-						break;
-					}
-
-					offset += parsed.record_len as usize;
-				}
-
-				if found { break; }
+			// check if the current directory contains the component
+			cur_inode = self.lookup(device, &cur_dir, comp_name)?;
+			if cur_inode == INVALID_ADDRESS {
+				return Err(io::Error::new(io::ErrorKind::NotFound, "directory doesn't exist"));
 			}
 
-			if !found {
-				return Err(io::Error::new(io::ErrorKind::NotFound, "directory doesn't exist"));
+			// check if it is a directory
+			cur_dir = inode_handler.read_inode(device, cur_inode)?;
+			if cur_dir.file_type != FileType::Directory {
+				return Err(io::Error::new(io::ErrorKind::NotADirectory, "path component is not a directory"));
 			}
 		}
 
@@ -77,33 +97,24 @@ impl DirectoryHandler {
 	}
 
 
-	pub fn can_fit<D: BlockDevice>(&self, device: &mut D, dir: &INode, entry: &mut DirEntry) -> io::Result<Option<(u32, u16)>> {
+	pub fn can_fit<D: BlockDevice>(&self, device: &mut D, dir: &INode, to_insert: &DirEntry) -> io::Result<Option<(u32, u16)>> {
 		//! checks whether the entry can be inserted in the directory without adding another data block.
 		//! if it can fit, returns the block index where it fits and the offset of the offset of the free region to use.
 
-		let mut buf = [0u8; BLOCK_SIZE];
-
-		// for every block used by the directory
-		for block in 0..dir.blocks {
-			let absolute_block = dir.direct[block as usize] + self.data_start;
-			device.read_block(absolute_block, &mut buf)?;
-
-			// parse all the entries
-			let mut offset = 0;
-			while offset < BLOCK_SIZE {
-				let parsed = DirEntry::deserialize(&buf, offset);
-
-				// we return the first free region big enough.
-				// deletion behavior guarantees that there will not be two contiguous free regions
-				if parsed.is_free() && parsed.record_len >= entry.record_len {
-					return Ok(Some((dir.direct[block as usize], offset as u16)));
-				}
-
-				offset += parsed.record_len as usize;
+		let mut res: io::Result<Option<(u32, u16)>> = Ok(None);
+		
+		self.iterate(device, dir, |entry: DirEntry, block: u32, offset: usize| -> bool {
+			// we return the first free region big enough.
+			// deletion behavior guarantees that there will not be two contiguous free regions
+			if entry.is_free() && entry.record_len >= to_insert.record_len {
+				res = Ok(Some((block, offset as u16)));
+				return true;
 			}
-		}
 
-		Ok(None)
+			return false;
+		})?;
+
+		return res;
 	}
 
 
@@ -139,7 +150,7 @@ impl DirectoryHandler {
 	}
 
 
-	pub fn add_entry_here<D: BlockDevice>(&self, device: &mut D, dir: &INode, entry: &mut DirEntry, block: u32, free_region_offset: u16) -> io::Result<()> {
+	pub fn add_entry_here<D: BlockDevice>(&self, device: &mut D, _dir: &INode, entry: &mut DirEntry, block: u32, free_region_offset: u16) -> io::Result<()> {
 		//! adds the file at the specified block, by shrinking the given free region.
 
 		// read the whole block (might contain other entries)
@@ -160,7 +171,7 @@ impl DirectoryHandler {
 
 		Ok(())
 	}
-	pub fn add_entry_grow<D: BlockDevice>(&self, device: &mut D, dir: &INode, entry: &DirEntry, block: u32) -> io::Result<()> {
+	pub fn add_entry_grow<D: BlockDevice>(&self, device: &mut D, _dir: &INode, entry: &DirEntry, block: u32) -> io::Result<()> {
 		//! adds the file at the specified block.
 		//! NOTE: the inode itself isn't modified, so the caller should add the block to the direct/indirect and increase the inode.size
 
@@ -191,15 +202,146 @@ impl DirectoryHandler {
 	//}
 
 
+	pub fn free_region<D: BlockDevice>(&self, device: &mut D, _dir: &INode, block: u32, offset: u16, size: u16) -> io::Result<()> {
+		//! marks the specified region as free, potentially merging with adjacent free regions
+		
+		// read the whole block (might contain other entries)
+		let mut buf = [0u8; BLOCK_SIZE];
+		device.read_block(self.data_start + block, &mut buf)?;
+
+		let mut free_region_size = size;
+		let mut free_region_start = offset;
+
+
+		// parse the next entry
+		let next_offset = offset as usize + size as usize;
+		if next_offset < BLOCK_SIZE {
+			// TODO: this can fail if the provided offset/size are invalid.
+			let next_entry = DirEntry::deserialize(&buf, next_offset);
+			if next_entry.is_free() {
+				free_region_size += next_entry.record_len;
+			}
+		}
+		
+
+		// find the previous entry
+		// TODO: this might be optimized by returning it when looking for the entry to remove.
+		let mut prev_offset = 0;
+		let mut prev_entry = None;
+		while prev_offset < offset {
+			let parsed = DirEntry::deserialize(&buf, prev_offset as usize);
+			if prev_offset + parsed.record_len > offset {
+				return Err(io::Error::new(io::ErrorKind::InvalidInput, "the provided offset must mark the start of a new entry"));
+			}
+			if prev_offset + parsed.record_len == offset {
+				prev_entry = Some(parsed);
+				break;
+			}
+			prev_offset += parsed.record_len;
+		}
+
+		match prev_entry {
+			Some(e) => if e.is_free() {
+				free_region_size += e.record_len;
+				free_region_start = prev_offset;
+			}
+			_ => {}
+		}
+
+
+		// create the entry corresponding to the new free region
+		let free_entry = DirEntry::free(free_region_size);
+		free_entry.serialize(&mut buf, free_region_start as usize);
+		
+		device.write_block(self.data_start + block, &buf)?;
+
+		Ok(())
+	}
+
+
+	pub fn iterate<D: BlockDevice, F: FnMut(DirEntry, u32, usize) -> bool>(&self, device: &mut D, dir_inode: &INode, mut callback: F) -> io::Result<()> {
+		//! iterate over the entries of the given directory, calling the provided callback with also the RELATIVE data block index and offset in the block.
+		//! the callback should return true to stop iterating.
+		let mut buf = [0u8; BLOCK_SIZE];
+
+		// for every block used by the given directory
+		for block in 0..dir_inode.blocks {
+			let absolute_block = dir_inode.direct[block as usize] + self.data_start;
+			device.read_block(absolute_block, &mut buf)?;
+
+			// parse all the entries
+			let mut offset = 0;
+			while offset < BLOCK_SIZE {
+				let parsed = DirEntry::deserialize(&buf, offset);
+				let len = parsed.record_len as usize;
+
+				let res = callback(parsed, dir_inode.direct[block as usize], offset);
+				if res { return Ok(()); }
+
+				offset += len;
+			}
+		}
+
+		Ok(())
+	}
+
 
 
 	fn path_component_bytes<'a>(component: &'a Component<'a>) -> &'a [u8] {
 		match component {
 			Component::Prefix(prefix) => prefix.as_os_str().as_encoded_bytes(),
-			Component::RootDir => b"/",
-			Component::CurDir => b".",
-			Component::ParentDir => b"..",
-			Component::Normal(name) => name.as_encoded_bytes(),
+			Component::RootDir        => b"/",
+			Component::CurDir         => b".",
+			Component::ParentDir      => b"..",
+			Component::Normal(name)   => name.as_encoded_bytes(),
 		}
 	}
 }
+
+
+
+
+
+
+// TODO: it's kinda hard to test this without the whole filesystem, so this should prolly be in FormatV1 tests
+
+#[test]
+fn directory_handler() -> io::Result<()> {
+	return Ok(());
+
+	use crate::device::memory_device::MemoryDevice;
+	use super::format::FormatV1;
+	use super::bitmap_allocator::BitmapAllocator;
+	use super::superblock::Superblock;
+	use crate::formats::format::FsFormat;
+
+
+	let mut buf = [0u8; BLOCK_SIZE];
+	let mut device = MemoryDevice::empty(100);
+	FormatV1::format(&mut device)?;
+
+	let mut fs = FormatV1::mount(&mut device)?;
+	
+	fs.create_file(&mut device, "dir", FileType::Directory)?;
+	fs.create_file(&mut device, "dir/dir2", FileType::Directory)?;
+
+	let tests = vec![
+		("file.txt", 0),
+		("/file.txt", 0),
+		("./file.txt", 0),
+		("dir/file.txt", 0),
+		("/dir/file.txt", 0),
+		("./dir/file.txt", 0),
+		("dir/../dir/file.txt", 0),
+		("dir/dir2/file.txt", 0),
+	];
+
+	for test in &tests {
+		let path = std::path::Path::new(test.0);
+		let parent_inode_index = fs.get_directory_handler().traverse(&mut device, path.parent().unwrap(), test.1, fs.get_inode_handler())?;
+	}
+	
+
+	Ok(())
+}
+

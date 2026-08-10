@@ -2,23 +2,6 @@ use crate::fs_utils::*;
 
 
 
-impl FileType {
-	pub fn to_le_bytes(&self) -> [u8; 1] {
-		match self {
-			FileType::File      => { [0; 1] }
-			FileType::Directory => { [1; 1] }
-			FileType::Symlink   => { [2; 1] }
-		}
-	}
-	pub fn from_le_bytes(buf: &[u8; 1]) -> Self {
-		match buf[0] {
-			0 => { FileType::File      }
-			1 => { FileType::Directory }
-			_ => { FileType::Symlink   }
-		}
-	}
-}
-
 pub struct INode {
 	pub size: u64,
 	pub file_type: FileType,
@@ -46,7 +29,7 @@ impl INode {
 
 
 	pub fn empty(file_type: FileType, permissions: u16, created: u64) -> Self {
-		Self { size: 0, file_type, permissions, direct: [INVALID_ADDRESS; 12], indirect: 0, created, modified: created, links: 1, blocks: 0 }
+		Self { size: 0, file_type, permissions, direct: [INVALID_ADDRESS; 12], indirect: INVALID_ADDRESS, created, modified: created, links: 1, blocks: 0 }
 	}
 
 
@@ -131,5 +114,57 @@ impl INode {
 
 
 	pub fn print(&self) {
+		println!("INode");
+		println!("  size:        {} (0x{:016X})", self.size, self.size);
+		match self.file_type {
+			FileType::Directory => println!("  file type:   Directory"),
+			FileType::File      => println!("  file type:   File"),
+			FileType::Symlink   => println!("  file type:   Symlink"),
+		}
+
+		println!("  direct (relative):");
+		for (i, block) in self.direct.iter().enumerate() {
+			if *block == INVALID_ADDRESS {
+				print!("       [{:2}] {:>10} (0x{:08X})", i, "INVALID", block);
+			} else {
+				print!("       [{:2}] {:>10} (0x{:08X})", i, block, block);
+			}
+
+			if i % 2 == 0 {
+				if i >= self.blocks as usize { print!("  X  "); }
+				else						 { print!("     "); }
+			} else {
+				if i >= self.blocks as usize { println!("  X"); }
+				else						 { println!(); }
+			}
+		}
+
+		if self.indirect == INVALID_ADDRESS {
+			print!("  indirect (relative): {:>10} (0x{:08X})", "INVALID", self.indirect);
+		} else {
+			print!("  indirect (relative): {:>10} (0x{:08X})", self.indirect, self.indirect);
+		}
+		if self.blocks <= 12 { println!("  X"); }
+		else                 { println!(); }
+		println!();
+
+		// TODO: print time and permissions nicely
+		println!("  created:     {} (0x{:016X})", self.created, self.created);
+		println!("  modified:    {} (0x{:016X})", self.modified, self.modified);
+		println!("  permissions: {} (0x{:X})", self.permissions, self.permissions);
+		println!();
+		println!("  links:       {} (0x{:04X})", self.links, self.links);
+		println!("  blocks:      {} (0x{:04X})", self.blocks, self.blocks);
+		println!();
+
+		let mut buf = [0u8; BLOCK_SIZE];
+		self.serialize(&mut buf);
+		print!("On disk representation:");
+		for i in 0..Self::on_disk_size() {
+			if i % 8 == 0 { print!("  "); }
+			if i % 16 == 0 { println!(); print!("  "); }
+			print!("{:02X}", buf[i]);
+		}
+		println!();
 	}
 }

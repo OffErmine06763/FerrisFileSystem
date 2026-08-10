@@ -1,3 +1,4 @@
+
 #![allow(dead_code, unused_imports)]
 
 mod ffs;
@@ -26,6 +27,9 @@ fn main() -> io::Result<()> {
 	ffs.create_file("name.txt", FileType::File)?;
 	ffs.create_file("fold", FileType::Directory)?;
 	ffs.create_file("fold/inner.txt", FileType::File)?;
+	ffs.delete_file("name.txt", FileType::File)?;
+	ffs.delete_file("fold/inner.txt", FileType::File)?;
+	ffs.delete_file("fold", FileType::Directory)?;
 	ffs.save(path)?;
 
 	println!("TS WORKS!");

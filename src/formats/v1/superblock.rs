@@ -102,30 +102,23 @@ impl Superblock {
 		println!("Superblock");
 		println!("==========");
 		println!("{:<15} {:>12} {:>12}", "Region", "Start", "Blocks");
-		println!("{:<15} {:>12} {:>12}", "---------------", "------------", "------------");
+		println!("{:<15}-{:>12}-{:>12}", "---------------", "------------", "------------");
 
 		println!(
 			"{:<15} {:>12} {:>12}",
-			"inode bitmap",
-			self.inode_bitmap_start,
-			self.inode_bitmap_blocks
+			"inode bitmap", self.inode_bitmap_start, self.inode_bitmap_blocks
 		);
 		println!(
 			"{:<15} {:>12} {:>12}",
-			"block bitmap",
-			self.block_bitmap_start,
-			self.block_bitmap_blocks
+			"block bitmap", self.block_bitmap_start, self.block_bitmap_blocks
 		);
 		println!(
 			"{:<15} {:>12} {:>12}",
-			"inode table",
-			self.inode_table_start,
-			self.inode_table_blocks
+			"inode table", self.inode_table_start, self.inode_table_blocks
 		);
 		println!(
 			"{:<15} {:>12}",
-			"data start",
-			self.data_start
+			"data start", self.data_start
 		);
 
 		println!();
