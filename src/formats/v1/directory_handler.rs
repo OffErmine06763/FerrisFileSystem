@@ -19,6 +19,8 @@ impl DirectoryHandler {
 		Self { data_start }
 	}
 
+	// TODO: create functions to rearrange entries to optimize space usage
+
 
 
 	pub fn find<D: BlockDevice>(&self, device: &mut D, dir_inode: &INode, name: &[u8]) -> io::Result<Option<(DirEntry, u32, usize)>> {
@@ -125,27 +127,59 @@ impl DirectoryHandler {
 		self.write_directory_with_inode(device, directory, &inode)
 	}
 	pub fn write_directory_with_inode<D: BlockDevice>(&self, device: &mut D, directory: &Directory, inode: &INode) -> io::Result<()> {
-		let mut buf = [0u8; BLOCK_SIZE];
-		let mut offset = 0;
-		let mut data_block_dst = 0;
+		//! writes the directory entries in the order provided.
+		//! expects the directory inode to have enough allocated blocks.
+		//! the entries must be correctly formatted: each block utilized must be filled entirely
+
+		// First pass: validate the directory layout.
+		let mut offset = 0usize;
+		let mut data_block_dst = 0usize;
 
 		for e in &directory.entries {
-			if offset + e.record_len as usize > BLOCK_SIZE {
-				if data_block_dst >= 12 {
-					todo!()
-				}
-			
+			let record_len = e.record_len as usize;
+
+			if offset + record_len > BLOCK_SIZE {
+				return Err(io::Error::new(io::ErrorKind::InvalidInput, "records sizes exceed block size"));
+			}
+
+			offset += record_len;
+
+			if offset == BLOCK_SIZE {
+				data_block_dst += 1;
+				offset = 0;
+			}
+		}
+
+		// The directory must end exactly on a block boundary.
+		if offset != 0 {
+			return Err(io::Error::new(io::ErrorKind::InvalidInput, "records do not fill the last data block"));
+		}
+
+		if data_block_dst > 12 {
+			todo!(); // support indirect
+		}
+
+
+		// Second pass: perform the writes.
+		let mut buf = [0u8; BLOCK_SIZE];
+		let mut offset = 0usize;
+		let mut data_block_dst = 0usize;
+
+		for e in &directory.entries {
+			let record_len = e.record_len as usize;
+
+			e.serialize(&mut buf, offset);
+			offset += record_len;
+
+			if offset == BLOCK_SIZE {
 				device.write_block(self.data_start + inode.direct[data_block_dst], &buf)?;
+
 				buf = [0u8; BLOCK_SIZE];
 				offset = 0;
 				data_block_dst += 1;
 			}
-
-			e.serialize(&mut buf, offset);
-			offset += e.record_len as usize;
 		}
 
-		device.write_block(self.data_start + inode.direct[data_block_dst], &buf)?;
 		Ok(())
 	}
 
@@ -259,6 +293,32 @@ impl DirectoryHandler {
 	}
 
 
+	pub fn get_entries<D: BlockDevice>(&self, device: &mut D, dir: &INode, include_free: bool) -> io::Result<Vec<DirEntry>> {
+		//! returns the contents of the directory
+
+		let mut entries = Vec::<DirEntry>::new();
+		
+		// perform this check only once, even if it means duplicating some code.
+		if include_free {
+			self.iterate(device, dir, |entry: DirEntry, _block: u32, _offset: usize| -> bool {
+				entries.push(entry);
+				return false;
+			})?;
+		}
+		else 
+		{
+			self.iterate(device, dir, |entry: DirEntry, _block: u32, _offset: usize| -> bool {
+				if !entry.is_free() {
+					entries.push(entry);
+				}
+				return false;
+			})?;
+		}
+
+		Ok(entries)
+	}
+
+
 	pub fn iterate<D: BlockDevice, F: FnMut(DirEntry, u32, usize) -> bool>(&self, device: &mut D, dir_inode: &INode, mut callback: F) -> io::Result<()> {
 		//! iterate over the entries of the given directory, calling the provided callback with also the RELATIVE data block index and offset in the block.
 		//! the callback should return true to stop iterating.
@@ -274,12 +334,36 @@ impl DirectoryHandler {
 			while offset < BLOCK_SIZE {
 				let parsed = DirEntry::deserialize(&buf, offset);
 				let len = parsed.record_len as usize;
+				if offset + len > BLOCK_SIZE {
+					return Err(io::Error::new(io::ErrorKind::InvalidInput, "records sizes exceed block size"));
+				}
 
 				let res = callback(parsed, dir_inode.direct[block as usize], offset);
 				if res { return Ok(()); }
 
 				offset += len;
 			}
+		}
+
+		Ok(())
+	}
+	pub fn iterate_block_unchecked<D: BlockDevice, F: FnMut(DirEntry, u32, usize) -> bool>(&self, device: &mut D, block_ind: u32, mut callback: F) -> io::Result<()> {
+		//! iterates over the entries in the provided block, without checking if the last entry overflows to the next block
+		let mut buf = [0u8; BLOCK_SIZE];
+
+		let absolute_block = block_ind + self.data_start;
+		device.read_block(absolute_block, &mut buf)?;
+
+		// parse all the entries
+		let mut offset = 0;
+		while offset < BLOCK_SIZE {
+			let parsed = DirEntry::deserialize(&buf, offset);
+			let len = parsed.record_len as usize;
+
+			let res = callback(parsed, block_ind, offset);
+			if res { return Ok(()); }
+
+			offset += len;
 		}
 
 		Ok(())

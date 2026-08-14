@@ -1,7 +1,8 @@
 use crate::fs_utils::*;
 use crate::device::block_device::{self, BlockDevice};
 use crate::device::memory_device::MemoryDevice;
-use crate::formats::{self, format::FsFormat, v1::format::*};
+use crate::formats::format::{FsFormat, File, IntegrityResult};
+use crate::formats::v1::format::FormatV1;
 
 use std::io;
 use std::path::Path;
@@ -26,17 +27,15 @@ impl<D: BlockDevice> FFS<D> {
 		Ok(Self { device, format })
 	}
 
-	pub fn create_file(&mut self, path: &str, file_type: FileType) -> io::Result<()> {
+	pub fn create_file(&mut self, path: &str, file_type: FileType) -> io::Result<File> {
 		self.format.create_file(&mut self.device, path, file_type)
 	}
 	pub fn delete_file(&mut self, path: &str, file_type: FileType) -> io::Result<()> {
 		self.format.delete_file(&mut self.device, path, file_type)
 	}
-	pub fn read(&mut self, inode: u32, buf: &mut [u8]) {
-		self.format.read(inode, buf);
-	}
-	pub fn write(&mut self) {
-		self.format.write();
+
+	pub fn check_integrity(&mut self) -> io::Result<IntegrityResult> {
+		self.format.check_integrity(&mut self.device)
 	}
 }
 

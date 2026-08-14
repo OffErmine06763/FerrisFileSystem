@@ -120,6 +120,7 @@ impl INode {
 			FileType::Directory => println!("  file type:   Directory"),
 			FileType::File      => println!("  file type:   File"),
 			FileType::Symlink   => println!("  file type:   Symlink"),
+			FileType::Unknown   => println!("  file type:   Unknown  WARNING"),
 		}
 
 		println!("  direct (relative):");

@@ -12,15 +12,20 @@ pub struct BitmapAllocator {
 	/// 1 past the highest value that may be returned by allocate
 	/// (the bitmap itself might be bigger than the region it maps to)
 	max_index: u32,
+	/// index of the last allocation, future allocations will start looking from here
+	last_alloc: u32,
 }
 
 impl BitmapAllocator {
 	pub const ERR_MAPPED_REGION_FULL: &str = "cannot allocate, mapped region full";
 	pub const ERR_BITMAP_FULL: &str = "cannot allocate, bitmap full";
 
+
 	pub fn new(start: u32, size: u32, max_index: u32) -> Self {
-		Self { start, size, max_index }
+		Self { start, size, max_index, last_alloc: 0 }
 	}
+
+
 
 	pub fn get_index(bitmap_block: u32, byte_in_block: u32, bit_in_byte: u32) -> u32 {
 		return (byte_in_block as u32 + bitmap_block * BLOCK_SIZE as u32) * 8 + bit_in_byte;
@@ -36,7 +41,23 @@ impl BitmapAllocator {
 	}
 
 
-	pub fn find_free<D: BlockDevice>(&self, device: &mut D, num: u32) -> io::Result<Vec<u32>> {
+
+	pub fn is_allocated<D: BlockDevice>(&self, device: &mut D, block: u32) -> io::Result<bool> {
+		if block > self.max_index {
+			return Ok(false);
+		}
+
+		let (bitmap_block, byte, bit) = Self::unpack_index(block);
+		let mut buf = [0u8; BLOCK_SIZE];
+		device.read_block(self.start + bitmap_block, &mut buf)?;
+		let byte = buf[byte as usize];
+		
+		Ok(byte & (1 << bit) != 0)
+	}
+
+
+
+	pub fn find_free<D: BlockDevice>(&mut self, device: &mut D, num: u32) -> io::Result<Vec<u32>> {
 		//! return a vector containing the indices of free blocks, which length is up to 'num'.
 		//! it might return fewer elements if there are not enough free blocks.
 		if num == 0 { return Ok(vec![]) }
@@ -44,21 +65,55 @@ impl BitmapAllocator {
 		let mut res: Vec<u32> = vec![];
 		let num = num as usize;
 		res.reserve(num);
-		let mut buf = [0u8; BLOCK_SIZE];
 		
-		for i in 0..self.size {
+		let mut buf = [0u8; BLOCK_SIZE];
+
+		let (start_block, start_byte, _start_bit) = Self::unpack_index(self.last_alloc);
+		
+		'outer:
+		for i in start_block..self.size {
 			let bitmap_addr = i + self.start;
 			device.read_block(bitmap_addr, &mut buf)?;
 			
-			for j in 0..BLOCK_SIZE {
+			let start = if i == start_block { start_byte } else { 0 };
+			let start = start as usize;
+
+			for j in start..BLOCK_SIZE {
 				let mut el = buf[j];
 				if el == u8::MAX { continue; }
 				
 				let offset = Self::get_index(i, j as u32, 0);
 				for pos in 0..8u32 {
+					let index = offset + pos;
+					if index >= self.max_index { break 'outer; }
+
 					if el & 1 == 0 {
-						let index = offset + pos;
-						if index >= self.max_index { return Ok(res); }
+						res.push(index);
+						if res.len() == num { return Ok(res); }
+					}
+					el >>= 1;
+				}
+			}
+		}
+
+		// if we couldn't find enough blocks, restart
+		'outer:
+		for i in 0..start_block {
+			let bitmap_addr = i + self.start;
+			device.read_block(bitmap_addr, &mut buf)?;
+			
+			let end = if i == start_block { start_byte as usize } else { BLOCK_SIZE };
+
+			for j in 0..end {
+				let mut el = buf[j];
+				if el == u8::MAX { continue; }
+				
+				let offset = Self::get_index(i, j as u32, 0);
+				for pos in 0..8u32 {
+					let index = offset + pos;
+					if index >= self.max_index { break 'outer; }
+
+					if el & 1 == 0 {
 						res.push(index);
 						if res.len() == num { return Ok(res); }
 					}
@@ -70,18 +125,29 @@ impl BitmapAllocator {
 		Ok(res)
 	}
 	
+
+
 	pub fn allocate<D: BlockDevice>(&mut self, device: &mut D, blocks: &Vec<u32>) -> io::Result<()> {
 		//! mark the provided indices as allocated.
 		//! for optimal performance, keep close together the indices that are located in the same bitmap block.
 		//! ideally just pass the result of find_free().
-		self.modify(device, blocks, |byte, bit| *byte |= 1 << bit)
-	}
+		if blocks.len() == 0 { return Ok(()) }
 
+		self.modify(device, blocks, |byte, bit| *byte |= 1 << bit)?;
+		self.last_alloc = blocks[blocks.len() - 1];
+		
+		Ok(())
+	}
 	pub fn deallocate<D: BlockDevice>(&mut self, device: &mut D, blocks: &Vec<u32>) -> io::Result<()> {
 		//! mark the provided indices as free.
 		//! for optimal performance, keep close together the indices that are located in the same bitmap block.
-		self.modify(device, blocks, |byte, bit| *byte &= !(1 << bit))
+		
+		self.modify(device, blocks, |byte, bit| *byte &= !(1 << bit))?;
+		
+		Ok(())
 	}
+
+
 
 	pub fn find_allocate<D: BlockDevice>(&mut self, device: &mut D) -> io::Result<u32> {
 		//! finds one free block and allocates it.
@@ -107,7 +173,9 @@ impl BitmapAllocator {
 
 				buf[j] |= 1 << pos;
 				device.write_block(bitmap_addr, &buf)?;
-				// j * 8 + i * BLOCK_SIZE * 8 + pos
+
+				self.last_alloc = index;
+				
 				return Ok(index);
 			}
 		}
@@ -142,6 +210,46 @@ impl BitmapAllocator {
 		}
 
 		Ok(())
+	}
+
+
+
+	pub fn max_index(&self) -> u32 {
+		self.max_index
+	}
+
+
+
+	pub fn count_allocated<D: BlockDevice>(&self, device: &mut D) -> io::Result<u32> {
+		//! count the number of allocated blocks.
+		//! NOTE: very expensive operation, prefer using the cached value in superblock when possible
+
+		let mut count = 0;
+		let mut buf = [0u8; BLOCK_SIZE];
+
+		'outer:
+		for i in 0..self.size {
+			let bitmap_addr = i + self.start;
+			device.read_block(bitmap_addr, &mut buf)?;
+			
+			for j in 0..BLOCK_SIZE {
+				let mut el = buf[j];
+				if el == 0 { continue; }
+				
+				let offset = Self::get_index(i, j as u32, 0);
+				for pos in 0..8u32 {
+					let index = offset + pos;
+					if index >= self.max_index { break 'outer; }
+
+					if el & 1 != 0 {
+						count += 1;
+					}
+					el >>= 1;
+				}
+			}
+		}
+
+		Ok(count)
 	}
 }
 

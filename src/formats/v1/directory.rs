@@ -121,6 +121,7 @@ impl DirEntry {
 				FileType::Directory => println!("  file type:   Directory"),
 				FileType::File      => println!("  file type:   File"),
 				FileType::Symlink   => println!("  file type:   Symlink"),
+				FileType::Unknown   => println!("  file type:   Unknown  WARNING"),
 			}
 
 			println!("  record_len:  {} (0x{:04X})", self.record_len, self.record_len);

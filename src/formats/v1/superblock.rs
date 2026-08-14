@@ -18,7 +18,11 @@ pub struct Superblock {
 	pub inode_table_blocks: u32,
 
 	pub data_start: u32,
+
 	pub root_inode: u32,
+
+	pub free_inodes: u32,
+	pub free_data: u32,
 }
 
 impl Superblock {
@@ -28,7 +32,16 @@ impl Superblock {
 		let  inode_table_start = block_bitmap_start + block_bitmap_blocks;
 		let         data_start =  inode_table_start + inode_table_blocks;
 
-		Self { magic, version, block_size, total_blocks, inode_bitmap_start, inode_bitmap_blocks, block_bitmap_start, block_bitmap_blocks, inode_table_start, inode_table_blocks, data_start, root_inode }
+		Self { 
+			magic, version, block_size, total_blocks, 
+			inode_bitmap_start, inode_bitmap_blocks, 
+			block_bitmap_start, block_bitmap_blocks, 
+			inode_table_start, inode_table_blocks, 
+			data_start, 
+			root_inode,
+			free_inodes: inode_table_blocks * INode::inodes_per_block(),
+			free_data: total_blocks - data_start
+		}
 	}
 
 	pub fn serialize(&self, buf: &mut [u8; BLOCK_SIZE]) {
@@ -57,7 +70,11 @@ impl Superblock {
 		write_field!(self.inode_table_blocks);
 
 		write_field!(self.data_start);
+
 		write_field!(self.root_inode);
+
+		write_field!(self.free_inodes);
+		write_field!(self.free_data);
 	}
 
 	pub fn deserialize(buf: &[u8]) -> Self {
@@ -93,7 +110,11 @@ impl Superblock {
 			inode_table_blocks: read_field!(u32),
 
 			data_start: read_field!(u32),
+			
 			root_inode: read_field!(u32),
+
+			free_inodes: read_field!(u32),
+			free_data: read_field!(u32),
 		}
 	}
 

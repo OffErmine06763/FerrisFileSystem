@@ -8,6 +8,7 @@ pub enum FileType {
 	File,
 	Directory,
 	Symlink,
+	Unknown,
 }
 impl FileType {
 	pub fn to_le_bytes(&self) -> [u8; 1] {
@@ -15,13 +16,15 @@ impl FileType {
 			FileType::File      => { [0; 1] }
 			FileType::Directory => { [1; 1] }
 			FileType::Symlink   => { [2; 1] }
+			FileType::Unknown   => { [3; 1] }
 		}
 	}
 	pub fn from_le_bytes(buf: &[u8; 1]) -> Self {
 		match buf[0] {
 			0 => { FileType::File      }
 			1 => { FileType::Directory }
-			_ => { FileType::Symlink   }
+			2 => { FileType::Symlink   }
+			_ => { FileType::Unknown   }
 		}
 	}
 }

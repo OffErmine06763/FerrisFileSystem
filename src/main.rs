@@ -11,6 +11,7 @@ use ffs::FFS;
 use device::block_device::{self, BlockDevice};
 use device::file_device::FileDevice;
 use device::memory_device::MemoryDevice;
+use formats::format::IntegrityResult;
 use formats::v1::format::FormatV1;
 
 use std::io::{self};
@@ -32,6 +33,13 @@ fn main() -> io::Result<()> {
 	ffs.delete_file("fold", FileType::Directory)?;
 	ffs.save(path)?;
 
-	println!("TS WORKS!");
+	let ok = ffs.check_integrity()?;
+
+	if ok.is_ok() {
+		println!("TS WORKS!");
+	}
+	else {
+		println!(":(");
+	}
 	Ok(())
 }
