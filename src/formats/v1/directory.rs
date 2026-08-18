@@ -236,6 +236,7 @@ fn directory() -> io::Result<()> {
 	assert_eq!(this.file_type, FileType::Directory);
 	assert_eq!(this.name_len, 1);
 	assert_eq!(this.name[0], b'.');
+	assert_eq!(this.record_len, DirEntry::min_record_len(1));
 
 	let parent = &dir.entries[1];
 	assert_eq!(parent.inode, 2);
@@ -243,9 +244,11 @@ fn directory() -> io::Result<()> {
 	assert_eq!(parent.name_len, 2);
 	assert_eq!(parent.name[0], b'.');
 	assert_eq!(parent.name[1], b'.');
+	assert_eq!(parent.record_len, DirEntry::min_record_len(2));
 
 	let empty = &dir.entries[2];
 	assert!(empty.is_free());
+	assert_eq!(empty.record_len, BLOCK_SIZE as u16 - this.record_len - parent.record_len);
 
 	Ok(())
 }

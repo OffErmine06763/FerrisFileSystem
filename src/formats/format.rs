@@ -1,8 +1,8 @@
 use crate::fs_utils::*;
 use crate::device::block_device::BlockDevice;
-use super::file::FileIO;
+use super::file::File;
 
-use std::io;
+use std::io::{self, SeekFrom};
 
 
 pub struct DirectoryContentEntry {
@@ -14,9 +14,6 @@ pub struct DirectoryContentResult {
 	pub entries: Vec<DirectoryContentEntry>,
 	// add maybe stuff as total size (including the directory used space)...
 }
-
-
-pub type File = Box<dyn FileIO>;
 
 
 pub trait IntegrityError {
@@ -52,11 +49,17 @@ pub trait FsFormat<D: BlockDevice> {
 	fn create_file(&mut self, device: &mut D, path: &str, file_type: FileType) -> io::Result<File>;
 	fn delete_file(&mut self, device: &mut D, path: &str, file_type: FileType) -> io::Result<()>;
 	
-	fn open_file(&mut self, device: &mut D, path: &str) -> io::Result<File>;
-	fn get_directory_content(&mut self, device: &mut D, path: &str) -> io::Result<DirectoryContentResult>;
-
 	fn file_exists(&mut self, device: &mut D, path: &str) -> io::Result<(bool, Option<FileType>)>;
+	fn open_file(&mut self, device: &mut D, path: &str) -> io::Result<File>;
+	fn close_file(&mut self, device: &mut D, file: &File) -> io::Result<()>;
 
+	fn read(&mut self, device: &mut D, file: &File, buf: &mut [u8]) -> io::Result<usize>;
+	fn write(&mut self, device: &mut D, file: &File, buf: &[u8]) -> io::Result<usize>;
+	fn seek(&mut self, device: &mut D, file: &File, pos: SeekFrom) -> io::Result<u64>;
+
+	fn get_directory_content(&mut self, device: &mut D, path: &str) -> io::Result<DirectoryContentResult>;
+	
 	fn free_space(&mut self, device: &mut D) -> io::Result<usize>;
+	
 	fn check_integrity(&self, device: &mut D) -> io::Result<IntegrityResult>;
 }

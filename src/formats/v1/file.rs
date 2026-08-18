@@ -1,32 +1,20 @@
-use super::super::file::FileIO;
+use super::super::file::File;
 
-use std::io::{self, SeekFrom, Seek, Read, Write};
+use super::format::FormatV1;
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 
-pub struct File {
-    inode: u32,
-    offset: u64,
-    // ...
+pub struct FileMetadata {
+	pub inode: u32,
+	pub offset: u64,
+	// do not keep the size here, since multiple handles can write to the same file,
+	// so the cached size might be invalid
 }
 
-
-impl File {
+impl FileMetadata {
     pub fn new(inode: u32) -> Self {
-        File { inode, offset: 0 }
-    }
-}
-
-
-impl FileIO for File {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        todo!()
-    }
-
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        todo!()
-    }
-
-    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        todo!()
+        Self { inode, offset: 0 }
     }
 }

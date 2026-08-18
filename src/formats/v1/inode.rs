@@ -14,14 +14,14 @@ pub struct INode {
 	pub modified: u64,
 
 	pub links: u16,
-	pub blocks: u16,
+	pub blocks: u32,
 }
 
 
 impl INode {
 	pub fn on_disk_size() -> usize {
-		const _: () = assert!(std::mem::size_of::<INode>() >= 80, "allocated memory size insufficient for storing the inode");
-		return 80;
+		const _: () = assert!(std::mem::size_of::<INode>() <= 88, "allocated memory size insufficient for storing the inode");
+		return 88;
 	}
 	pub fn inodes_per_block() -> u32 {
 		(BLOCK_SIZE / Self::on_disk_size()) as u32
@@ -59,8 +59,13 @@ impl INode {
 
 		let pad = 0u8;
 		write_field!(pad);
+
 		write_field!(self.permissions);
 		write_field!(self.links);
+
+		let pad = 0u16;
+		write_field!(pad);
+
 		write_field!(self.blocks);
 
 		for i in self.direct {
@@ -96,7 +101,10 @@ impl INode {
 
 		let permissions = read_field!(u16);
 		let links = read_field!(u16);
-		let blocks = read_field!(u16);
+
+		read_field!(u16);
+
+		let blocks = read_field!(u32);
 
 		let mut direct = [0u32; 12];
 		for i in 0..12 {

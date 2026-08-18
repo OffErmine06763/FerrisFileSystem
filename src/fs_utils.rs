@@ -10,6 +10,18 @@ pub enum FileType {
 	Symlink,
 	Unknown,
 }
+
+impl std::fmt::Display for FileType {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::File      => write!(f, "File"),
+			Self::Directory => write!(f, "Directory"),
+			Self::Symlink   => write!(f, "Symlink"),
+			Self::Unknown   => write!(f, "Unknown"),
+		}
+	}
+}
+
 impl FileType {
 	pub fn to_le_bytes(&self) -> [u8; 1] {
 		match self {

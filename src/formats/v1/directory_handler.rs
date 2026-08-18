@@ -387,45 +387,13 @@ impl DirectoryHandler {
 
 
 
-// TODO: it's kinda hard to test this without the whole filesystem, so this should prolly be in FormatV1 tests
 
 #[test]
 fn directory_handler() -> io::Result<()> {
 	return Ok(());
 
-	use crate::device::memory_device::MemoryDevice;
-	use super::format::FormatV1;
-	use super::bitmap_allocator::BitmapAllocator;
-	use super::superblock::Superblock;
-	use crate::formats::format::FsFormat;
-
-
-	let mut buf = [0u8; BLOCK_SIZE];
-	let mut device = MemoryDevice::empty(100);
-	FormatV1::format(&mut device)?;
-
-	let mut fs = FormatV1::mount(&mut device)?;
-	
-	fs.create_file(&mut device, "dir", FileType::Directory)?;
-	fs.create_file(&mut device, "dir/dir2", FileType::Directory)?;
-
-	let tests = vec![
-		("file.txt", 0),
-		("/file.txt", 0),
-		("./file.txt", 0),
-		("dir/file.txt", 0),
-		("/dir/file.txt", 0),
-		("./dir/file.txt", 0),
-		("dir/../dir/file.txt", 0),
-		("dir/dir2/file.txt", 0),
-	];
-
-	for test in &tests {
-		let path = std::path::Path::new(test.0);
-		let parent_inode_index = fs.get_directory_handler().traverse(&mut device, path.parent().unwrap(), test.1, fs.get_inode_handler())?;
-	}
-	
-
-	Ok(())
+	// TODO: test adding and removing entries from a "fake" directory.
+	//		 don't even have to format the device, just to test if it handles
+	//       correctly the variable size used/free entries.
 }
 
