@@ -1,4 +1,6 @@
 use crate::fs_utils::*;
+use crate::fs_error::*;
+use crate::file::FileType;
 
 use std::io;
 
@@ -71,15 +73,19 @@ impl DirEntry {
 
 		write_field!(self.inode);
 		write_field!(self.record_len);
-		write_field!(self.name_len);
-		write_field!(self.file_type);
-		buf[offset..offset + self.name_len as usize].copy_from_slice(&self.name[..self.name_len as usize]);
-		offset += self.name_len as usize;
+		if !self.is_free() {
+			write_field!(self.name_len);
+			write_field!(self.file_type);
+			buf[offset..offset + self.name_len as usize].copy_from_slice(&self.name[..self.name_len as usize]);
+			offset += self.name_len as usize;
+		}
 		assert!(offset <= init_offset + self.record_len as usize, "directory entry record length is less than the minimum space required");
 		buf[offset..init_offset + self.record_len as usize].fill(0);
 	}
 
 	pub fn deserialize(buf: &[u8], init_offset: usize) -> Self {
+		//! the entry name can be truncated if there are not enough bytes to the end of the buffer or if name_len is greater than MAX_NAME
+		// TODO: handle subscript out of range
 		let mut offset = init_offset;
 
 		macro_rules! read_field {
@@ -102,9 +108,10 @@ impl DirEntry {
 			name_len: read_field!(u16),
 			file_type: read_field!(FileType),
 
-			name: [0u8; 64],
+			name: [0u8; Self::MAX_NAME],
 		};
-		res.name[..res.name_len as usize].copy_from_slice(&buf[offset..offset + res.name_len as usize]);
+		let len = (res.name_len as usize).min(BLOCK_SIZE - offset).min(Self::MAX_NAME);
+		res.name[..len].copy_from_slice(&buf[offset..offset + len]);
 		res
 	}
 
@@ -156,26 +163,6 @@ impl Directory {
 
 		Self { inode, entries: Vec::<DirEntry>::from([self_entry, parent_entry, free_entry]) }
 	}
-
-	//pub fn lookup(&self, name: &str) -> Option<u32> {
-	//	Option::Some(1)
-	//}
-
-	//pub fn insert(&mut self, name: &str, inode: u32) -> io::Result<()> {
-	//	Ok(())
-	//}
-
-	//pub fn remove(&mut self, name: &str) -> io::Result<()> {
-	//	Ok(())
-	//}
-
-	//pub fn rename(&mut self, old: &str, new: &str) -> io::Result<()> {
-	//	Ok(())
-	//}
-
-	//pub fn list(&self) -> Vec<DirEntry> {
-	//	Vec::<DirEntry>::new()
-	//}
 }
 
 

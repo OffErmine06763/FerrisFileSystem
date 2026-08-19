@@ -1,4 +1,5 @@
 use crate::fs_utils::*;
+use crate::file::FileType;
 use crate::formats::format::{IntegrityResult, IntegrityError};
 
 use std::io;

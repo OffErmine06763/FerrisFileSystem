@@ -1,4 +1,5 @@
 use crate::fs_utils::*;
+use crate::fs_error::*;
 use super::block_device::BlockDevice;
 
 use std::fs::{self, File, OpenOptions};
@@ -15,24 +16,26 @@ pub struct FileDevice {
 
 
 impl BlockDevice for FileDevice {
-	fn read_block(&mut self, block: u32, buf: &mut [u8; BLOCK_SIZE]) -> io::Result<()> {
+	fn read_block(&mut self, block: u32, buf: &mut [u8; BLOCK_SIZE]) -> FSResult<()> {
 		if block >= self.block_count() {
-			return Err(io::Error::new(io::ErrorKind::InvalidInput, "block out of range"));
+			return Err(FSError::InvalidInput(InvalidInputKind::BlockIndexOOB));
 		}
 		self.file.seek(SeekFrom::Start(block as u64 * BLOCK_SIZE as u64))?;
-		self.file.read_exact(buf)
+		self.file.read_exact(buf)?;
+		Ok(())
 	}
-	fn write_block(&mut self, block: u32, buf: &[u8; BLOCK_SIZE]) -> io::Result<()> {
+	fn write_block(&mut self, block: u32, buf: &[u8; BLOCK_SIZE]) -> FSResult<()> {
 		if block >= self.block_count() {
-			return Err(io::Error::new(io::ErrorKind::InvalidInput, "block out of range"));
+			return Err(FSError::InvalidInput(InvalidInputKind::BlockIndexOOB));
 		}
 		self.file.seek(SeekFrom::Start(block as u64 * BLOCK_SIZE as u64))?;
-		self.file.write_all(buf)
+		self.file.write_all(buf)?;
+		Ok(())
 	}
 	fn block_count(&self) -> u32 {
 		self.size
 	}
-	fn resize(&mut self, blocks: u32) -> io::Result<()> {
+	fn resize(&mut self, blocks: u32) -> FSResult<()> {
 		self.size = blocks;
 		self.file.set_len(blocks as u64 * BLOCK_SIZE as u64)?;
 		Ok(())
@@ -67,7 +70,7 @@ impl FileDevice {
 
 
 #[test]
-fn file_device() -> io::Result<()> {
+fn file_device() -> FSResult<()> {
 	FileDevice::create_disk_file("test_file_device.img", 2)?;
 	let mut device = FileDevice::from_path("test_file_device.img")?;
 	assert_eq!(device.block_count(), 2);
@@ -102,12 +105,10 @@ fn file_device() -> io::Result<()> {
 	device.resize(5)?;
 	assert_eq!(device.block_count(), 5);
 
-	let res = device.read_block(100, &mut buf).unwrap_err();
-	assert_eq!(res.kind(), io::ErrorKind::InvalidInput);
-	assert_eq!(res.to_string(), "block out of range");
-	let res = device.write_block(100, &mut buf).unwrap_err();
-	assert_eq!(res.kind(), io::ErrorKind::InvalidInput);
-	assert_eq!(res.to_string(), "block out of range");
+	let res = device.read_block(100, &mut buf);
+	assert_error_code(res, FSErrorCode::InputBlockIndexOOB);
+	let res = device.write_block(100, &mut buf);
+	assert_error_code(res, FSErrorCode::InputBlockIndexOOB);
 
 
 	device = FileDevice::from_path("test_file_device.img")?;

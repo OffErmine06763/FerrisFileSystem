@@ -1,4 +1,5 @@
 use crate::fs_utils::*;
+use crate::fs_error::*;
 use super::block_device::BlockDevice;
 
 use std::fs::{self, File, OpenOptions};
@@ -13,16 +14,16 @@ pub struct MemoryDevice {
 
 
 impl BlockDevice for MemoryDevice {
-	fn read_block(&mut self, block: u32, buf: &mut [u8; BLOCK_SIZE]) -> io::Result<()> {
+	fn read_block(&mut self, block: u32, buf: &mut [u8; BLOCK_SIZE]) -> FSResult<()> {
 		if block >= self.block_count() {
-			return Err(io::Error::new(io::ErrorKind::InvalidInput, "block out of range"));
+			return Err(FSError::InvalidInput(InvalidInputKind::BlockIndexOOB));
 		}
 		buf.copy_from_slice(&self.blocks[block as usize]);
 		Ok(())
 	}
-	fn write_block(&mut self, block: u32, buf: &[u8; BLOCK_SIZE]) -> io::Result<()> {
+	fn write_block(&mut self, block: u32, buf: &[u8; BLOCK_SIZE]) -> FSResult<()> {
 		if block >= self.block_count() {
-			return Err(io::Error::new(io::ErrorKind::InvalidInput, "block out of range"));
+			return Err(FSError::InvalidInput(InvalidInputKind::BlockIndexOOB));
 		}
 		self.blocks[block as usize] = *buf;
 		Ok(())
@@ -30,7 +31,7 @@ impl BlockDevice for MemoryDevice {
 	fn block_count(&self) -> u32 {
 		self.blocks.len() as u32
 	}
-	fn resize(&mut self, blocks: u32) -> io::Result<()> {
+	fn resize(&mut self, blocks: u32) -> FSResult<()> {
 		self.blocks.resize(blocks as usize, [0u8; BLOCK_SIZE]);
 		Ok(())
 	}
@@ -77,7 +78,7 @@ impl MemoryDevice {
 
 
 #[test]
-fn memory_device() -> io::Result<()> {
+fn memory_device() -> FSResult<()> {
 	let mut device = MemoryDevice::empty(2);
 	assert_eq!(device.block_count(), 2);
 	
@@ -111,12 +112,10 @@ fn memory_device() -> io::Result<()> {
 	device.resize(5)?;
 	assert_eq!(device.block_count(), 5);
 
-	let res = device.read_block(100, &mut buf).unwrap_err();
-	assert_eq!(res.kind(), io::ErrorKind::InvalidInput);
-	assert_eq!(res.to_string(), "block out of range");
-	let res = device.write_block(100, &mut buf).unwrap_err();
-	assert_eq!(res.kind(), io::ErrorKind::InvalidInput);
-	assert_eq!(res.to_string(), "block out of range");
+	let res = device.read_block(100, &mut buf);
+	assert_error_code(res, FSErrorCode::InputBlockIndexOOB);
+	let res = device.write_block(100, &mut buf);
+	assert_error_code(res, FSErrorCode::InputBlockIndexOOB);
 
 
 	File::create("test_memory_device.img")?;

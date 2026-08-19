@@ -1,5 +1,6 @@
 use crate::fs_utils::*;
 use crate::block_device::BlockDevice;
+use crate::fs_error::*;
 
 use std::io;
 
@@ -17,8 +18,8 @@ pub struct BitmapAllocator {
 }
 
 impl BitmapAllocator {
-	pub const ERR_MAPPED_REGION_FULL: &str = "cannot allocate, mapped region full";
-	pub const ERR_BITMAP_FULL: &str = "cannot allocate, bitmap full";
+	// pub const ERR_MAPPED_REGION_FULL: &str = "cannot allocate, mapped region full";
+	// pub const ERR_BITMAP_FULL: &str = "cannot allocate, bitmap full";
 
 
 	pub fn new(start: u32, size: u32, max_index: u32) -> Self {
@@ -42,7 +43,7 @@ impl BitmapAllocator {
 
 
 
-	pub fn is_allocated<D: BlockDevice>(&self, device: &mut D, block: u32) -> io::Result<bool> {
+	pub fn is_allocated<D: BlockDevice>(&self, device: &mut D, block: u32) -> FSResult<bool> {
 		if block > self.max_index {
 			return Ok(false);
 		}
@@ -57,7 +58,7 @@ impl BitmapAllocator {
 
 
 
-	pub fn find_free<D: BlockDevice>(&mut self, device: &mut D, num: u32) -> io::Result<Vec<u32>> {
+	pub fn find_free<D: BlockDevice>(&mut self, device: &mut D, num: u32) -> FSResult<Vec<u32>> {
 		//! return a vector containing the indices of free blocks, which length is up to 'num'.
 		//! it might return fewer elements if there are not enough free blocks.
 		if num == 0 { return Ok(vec![]) }
@@ -127,10 +128,11 @@ impl BitmapAllocator {
 	
 
 
-	pub fn allocate<D: BlockDevice>(&mut self, device: &mut D, blocks: &Vec<u32>) -> io::Result<()> {
+	pub fn allocate<D: BlockDevice>(&mut self, device: &mut D, blocks: &Vec<u32>) -> FSResult<()> {
 		//! mark the provided indices as allocated.
 		//! for optimal performance, keep close together the indices that are located in the same bitmap block.
 		//! ideally just pass the result of find_free().
+		//! note: does NOT check that they are not allocated already.
 		if blocks.len() == 0 { return Ok(()) }
 
 		self.modify(device, blocks, |byte, bit| *byte |= 1 << bit)?;
@@ -138,10 +140,11 @@ impl BitmapAllocator {
 		
 		Ok(())
 	}
-	pub fn deallocate<D: BlockDevice>(&mut self, device: &mut D, blocks: &Vec<u32>) -> io::Result<()> {
+	pub fn deallocate<D: BlockDevice>(&mut self, device: &mut D, blocks: &Vec<u32>) -> FSResult<()> {
 		//! mark the provided indices as free.
 		//! for optimal performance, keep close together the indices that are located in the same bitmap block.
-		
+		//! note: does NOT check that they are not free already.
+
 		self.modify(device, blocks, |byte, bit| *byte &= !(1 << bit))?;
 		
 		Ok(())
@@ -149,7 +152,7 @@ impl BitmapAllocator {
 
 
 
-	pub fn find_allocate<D: BlockDevice>(&mut self, device: &mut D) -> io::Result<u32> {
+	pub fn find_allocate<D: BlockDevice>(&mut self, device: &mut D) -> FSResult<u32> {
 		//! finds one free block and allocates it.
 		//! returns the index of the allocated block RELATIVE to the data region and not greater than the data region size.
 		//! this is more efficient than allocate(find_free(1)), since it doesn't have to re-read the block with the free bit.
@@ -168,7 +171,7 @@ impl BitmapAllocator {
 				let pos = buf[j].trailing_ones();
 				let index = (j as u32 + i * BLOCK_SIZE as u32) * 8 + pos as u32;
 				if index >= self.max_index {
-					return Err(io::Error::new(io::ErrorKind::StorageFull, Self::ERR_MAPPED_REGION_FULL));
+					return Err(FSError::StorageFull(StorageFullKind::None)); // Self::ERR_MAPPED_REGION_FULL
 				}
 
 				buf[j] |= 1 << pos;
@@ -180,12 +183,12 @@ impl BitmapAllocator {
 			}
 		}
 
-		Err(io::Error::new(io::ErrorKind::StorageFull, Self::ERR_BITMAP_FULL))
+		Err(FSError::StorageFull(StorageFullKind::None)) // Self::ERR_BITMAP_FULL
 	}
 
 
 
-	fn modify<D: BlockDevice, F: Fn(&mut u8, u8)>(&mut self, device: &mut D, blocks: &[u32], op: F) -> io::Result<()> {
+	fn modify<D: BlockDevice, F: Fn(&mut u8, u8)>(&mut self, device: &mut D, blocks: &[u32], op: F) -> FSResult<()> {
 		if blocks.is_empty() { return Ok(()) }
 
 		let mut buf = [0u8; BLOCK_SIZE];
@@ -220,7 +223,7 @@ impl BitmapAllocator {
 
 
 
-	pub fn count_allocated<D: BlockDevice>(&self, device: &mut D) -> io::Result<u32> {
+	pub fn count_allocated<D: BlockDevice>(&self, device: &mut D) -> FSResult<u32> {
 		//! count the number of allocated blocks.
 		//! NOTE: very expensive operation, prefer using the cached value in superblock when possible
 
@@ -263,7 +266,7 @@ impl BitmapAllocator {
 
 
 #[test]
-fn bitmap_allocator() -> io::Result<()> {
+fn bitmap_allocator() -> FSResult<()> {
 	use crate::device::memory_device::*;
 
 	// 2 blocks for the bitmap, starting at 6th block, that excludes the last 10 bits
@@ -342,8 +345,7 @@ fn bitmap_allocator() -> io::Result<()> {
 
 	// allocate in the full bitmap
 	let res = allocator.find_allocate(&mut device).unwrap_err();
-	assert_eq!(res.kind(), io::ErrorKind::StorageFull);
-	assert_eq!(res.to_string(), BitmapAllocator::ERR_MAPPED_REGION_FULL);
+	assert_eq!(res.code(), FSErrorCode::StorageFull);
 
 	// find free in the full bitmap
 	blocks = allocator.find_free(&mut device, 5)?;
@@ -363,8 +365,7 @@ fn bitmap_allocator() -> io::Result<()> {
 	allocator.allocate(&mut device, &blocks)?;
 
 	let res = allocator.find_allocate(&mut device).unwrap_err();
-	assert_eq!(res.kind(), io::ErrorKind::StorageFull);
-	assert_eq!(res.to_string(), BitmapAllocator::ERR_BITMAP_FULL);
+	assert_eq!(res.code(), FSErrorCode::StorageFull);
 
 
 	Ok(())

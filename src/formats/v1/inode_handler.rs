@@ -1,6 +1,8 @@
 use crate::fs_utils::*;
-use super::inode::*;
 use crate::device::block_device::BlockDevice;
+use crate::fs_error::*;
+
+use super::inode::*;
 
 use std::io;
 
@@ -16,10 +18,10 @@ impl INodeTableHandler {
 		Self { inode_table_start, inode_table_blocks }
 	}
 
-	pub fn write_inode<D: BlockDevice>(&self, device: &mut D, index: u32, inode: &INode) -> io::Result<()> {
+	pub fn write_inode<D: BlockDevice>(&self, device: &mut D, index: u32, inode: &INode) -> FSResult<()> {
 		let max_inode_index = self.inode_table_blocks * INode::inodes_per_block();
 		if index >= max_inode_index {
-			return Err(io::Error::new(io::ErrorKind::InvalidInput, "inode index past inode table region"));
+			return Err(FSError::InvalidInput(InvalidInputKind::INodeIndexOOB{ index, max: max_inode_index } ));
 		}
 
 		let inode_block = self.inode_table_start + index / INode::inodes_per_block();
@@ -40,7 +42,12 @@ impl INodeTableHandler {
 		Ok(())
 	}
 
-	pub fn read_inode<D: BlockDevice>(&self, device: &mut D, index: u32) -> io::Result<INode> {
+	pub fn read_inode<D: BlockDevice>(&self, device: &mut D, index: u32) -> FSResult<INode> {
+		let max_inode_index = self.inode_table_blocks * INode::inodes_per_block();
+		if index >= max_inode_index {
+			return Err(FSError::InvalidInput(InvalidInputKind::INodeIndexOOB{ index, max: max_inode_index } ));
+		}
+
 		let inode_block = self.inode_table_start + index / INode::inodes_per_block();
 		let offset = index % INode::inodes_per_block();
 		
