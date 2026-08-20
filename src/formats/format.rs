@@ -47,9 +47,14 @@ impl IntegrityResult {
 
 
 pub trait FsFormat<D: BlockDevice> {
-	fn create_file(&mut self, device: &mut D, path: &str, file_type: FileType) -> FSResult<File>;
-	fn delete_file(&mut self, device: &mut D, path: &str, file_type: FileType) -> FSResult<()>;
+	fn create_file(&mut self, device: &mut D, path: &str) -> FSResult<()>;
+	fn create_directory(&mut self, device: &mut D, path: &str) -> FSResult<()>;
+	fn create_symlink(&mut self, device: &mut D, path: &str, path_tgt: &str) -> FSResult<()>;
+
+	fn delete(&mut self, device: &mut D, path: &str) -> FSResult<()>;
 	
+	fn link(&mut self, device: &mut D, from: &str, to: &str) -> FSResult<()>;
+
 	fn file_exists(&mut self, device: &mut D, path: &str) -> FSResult<(bool, Option<FileType>)>;
 	fn open_file(&mut self, device: &mut D, path: &str) -> FSResult<File>;
 	fn close_file(&mut self, device: &mut D, file: &File) -> FSResult<()>;

@@ -31,13 +31,15 @@ fn main() -> FSResult<()> {
 	FormatV1::format(&mut device)?;
 	let mut ffs = FFS::mount(device)?;
 	
-	ffs.create_file("name.txt", FileType::File)?;
-	ffs.create_file("fold", FileType::Directory)?;
-	let file = ffs.create_file("fold/inner.txt", FileType::File)?;
+	ffs.create_file("name.txt")?;
+	ffs.create_directory("fold")?;
+	ffs.create_file("fold/inner.txt")?;
+	ffs.link("name.txt", "fold/name_inner.txt")?;
 
 	
 	print_dir("./fold", &mut ffs)?;
 
+	let file = ffs.open_file("fold/inner.txt")?;
 	file_io(&file, &mut ffs)?;
 
 	ffs.save(path)?;

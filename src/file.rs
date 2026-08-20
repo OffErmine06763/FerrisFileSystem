@@ -4,6 +4,11 @@
 pub enum FileType {
 	File,
 	Directory,
+	/// File that contains another path.
+	/// If the path is absolute (/path) it is relative to root.
+	/// If the path is relative (./path) it is relative to the directory it is in.
+	/// Operations such as open/read/write file should target the file pointed to by the symlink.
+	/// Operations such as delete/rename should target the symlink itself.
 	Symlink,
 	Unknown,
 }

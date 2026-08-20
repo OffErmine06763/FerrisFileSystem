@@ -20,45 +20,51 @@ pub enum FSErrorCategory {
 pub enum FSErrorCode {
 	FileDoesNotExist	  = Self::generic(1),
 	DirectoryDoesNotExist = Self::generic(2),
+	DoesNotExist		  = Self::generic(3),
+	AlreadyExists		  = Self::generic(4),
 
-	IsADirectory		  = Self::generic(3),
-	NotADirectory		  = Self::generic(4),
-	IsAFile				  = Self::generic(5),
-	NotAFile			  = Self::generic(6),
+	IsADirectory		  = Self::generic(5),
+	NotADirectory		  = Self::generic(6),
+	IsAFile				  = Self::generic(7),
+	NotAFile			  = Self::generic(8),
 
-	DirectoryNotEmpty = Self::generic(7),
-	FileNotOpen       = Self::generic(8),
+	DirectoryNotEmpty = Self::generic(9),
+	FileNotOpen       = Self::generic(10),
 
-	DirFreeRegionTooSmall = Self::generic(9),
-	DirEntryNotFree		  = Self::generic(10),
+	DirFreeRegionTooSmall = Self::generic(11),
+	DirEntryNotFree		  = Self::generic(12),
 
-	StorageFull	   = Self::generic(11),
-	INodeTableFull = Self::generic(12),
-	DataRegionFull = Self::generic(13),
+	StorageFull	   = Self::generic(13),
+	INodeTableFull = Self::generic(14),
+	DataRegionFull = Self::generic(15),
+	
+	InvalidInput				  = Self::generic(16),
+	InputDirEntriesOverfillBlock  = Self::generic(17),
+	InputDirEntriesUnderfillBlock = Self::generic(18),
+	InputOffsetNotAtDirEntryStart = Self::generic(19),
+	InputINodeIndexOOB			  = Self::generic(20),
+	InputBlockIndexOOB			  = Self::generic(21),
+	InputUnknownFileType		  = Self::generic(22),
 
-	InvalidInput				  = Self::generic(14),
-	InputDirEntriesOverfillBlock  = Self::generic(15),
-	InputDirEntriesUnderfillBlock = Self::generic(16),
-	InputOffsetNotAtDirEntryStart = Self::generic(17),
-	InputINodeIndexOOB			  = Self::generic(18),
-	InputBlockIndexOOB			  = Self::generic(19),
-	InputUnknownFileType		  = Self::generic(20),
+	EmptySymlink = Self::generic(23),
+	MaximumSymlinkDepthReached = Self::generic(24),
 
-	InvalidDirEntry      = Self::corruption(1),
-	ZeroLengthDirEntry   = Self::corruption(2),
-	DirEntryIsFree		 = Self::corruption(3),
-	DirEntryInvalidINode = Self::corruption(4),
-	DirEntryINodeOOB	 = Self::corruption(5),
+	InvalidDirEntry         = Self::corruption(1),
+	ZeroLengthDirEntry      = Self::corruption(2),
+	DirEntryIsFree		    = Self::corruption(3),
+	DirEntryInvalidINode    = Self::corruption(4),
+	DirEntryINodeOOB	    = Self::corruption(5),
+	DirEntryInvalidFileType = Self::corruption(6),
 
-	InvalidDir				= Self::corruption(6),
-	DirEntriesOverfillBlock	= Self::corruption(7),
+	InvalidDir				= Self::corruption(7),
+	DirEntriesOverfillBlock	= Self::corruption(8),
 
-	InvalidINode						= Self::corruption(8),
-	INodeSizeGreaterThanAllocatedRegion = Self::corruption(9),
-	INodeInvalidDirect					= Self::corruption(10),
-	INodeDirectOOB						= Self::corruption(11),
+	InvalidINode						= Self::corruption(9),
+	INodeSizeGreaterThanAllocatedRegion = Self::corruption(10),
+	INodeInvalidDirect					= Self::corruption(11),
+	INodeDirectOOB						= Self::corruption(12),
 
-	InvalidMagic = Self::corruption(12),
+	InvalidMagic = Self::corruption(13),
 }
 
 impl FSErrorCode {
@@ -96,6 +102,7 @@ pub enum InvalidDirEntryKind {
 	IsFree, // "directory entry to delete is already marked as free"
 	InvalidINode,
 	INodeOOB,
+	InvalidFileType,
 }
 #[derive(Debug, PartialEq)]
 pub enum InvalidDirKind {
@@ -138,6 +145,12 @@ pub enum FSError {
 	DirectoryDoesNotExist {
 		path: String,
 	}, // "directory doesn't exist"
+	DoesNotExist {
+		path: String,
+	},
+	AlreadyExists {
+		path: String,
+	},
 	
 	IsADirectory {
 		path: String,
@@ -161,6 +174,11 @@ pub enum FSError {
 	DirEntryNotFree,
 
 	StorageFull(StorageFullKind),
+
+	EmptySymlink {
+		path: String,	
+	},
+	MaximumSymlinkDepthReached,
 	
 	InvalidDirEntry(InvalidDirEntryKind),
 	InvalidDir(InvalidDirKind),
@@ -182,6 +200,8 @@ impl FSError {
 		match self {
 			Self::FileDoesNotExist      { .. } => FSErrorCode::FileDoesNotExist,
 			Self::DirectoryDoesNotExist { .. } => FSErrorCode::DirectoryDoesNotExist,
+			Self::DoesNotExist			{ .. } => FSErrorCode::DoesNotExist,
+			Self::AlreadyExists			{ .. } => FSErrorCode::AlreadyExists,
 			
 			Self::IsADirectory  { .. } => FSErrorCode::IsADirectory,
 			Self::NotADirectory { .. } => FSErrorCode::NotADirectory,
@@ -197,12 +217,16 @@ impl FSError {
 			Self::StorageFull(StorageFullKind::None)           => FSErrorCode::StorageFull,
 			Self::StorageFull(StorageFullKind::INodeTableFull) => FSErrorCode::INodeTableFull,
 			Self::StorageFull(StorageFullKind::DataRegionFull) => FSErrorCode::DataRegionFull,
+			
+			Self::EmptySymlink { .. } => FSErrorCode::EmptySymlink,
+			Self::MaximumSymlinkDepthReached { .. } => FSErrorCode::MaximumSymlinkDepthReached,
 
-			Self::InvalidDirEntry(InvalidDirEntryKind::None)         => FSErrorCode::InvalidDirEntry,
-			Self::InvalidDirEntry(InvalidDirEntryKind::ZeroLength)   => FSErrorCode::ZeroLengthDirEntry,
-			Self::InvalidDirEntry(InvalidDirEntryKind::IsFree)       => FSErrorCode::DirEntryIsFree,
-			Self::InvalidDirEntry(InvalidDirEntryKind::InvalidINode) => FSErrorCode::DirEntryInvalidINode,
-			Self::InvalidDirEntry(InvalidDirEntryKind::INodeOOB)     => FSErrorCode::DirEntryINodeOOB,
+			Self::InvalidDirEntry(InvalidDirEntryKind::None)            => FSErrorCode::InvalidDirEntry,
+			Self::InvalidDirEntry(InvalidDirEntryKind::ZeroLength)      => FSErrorCode::ZeroLengthDirEntry,
+			Self::InvalidDirEntry(InvalidDirEntryKind::IsFree)          => FSErrorCode::DirEntryIsFree,
+			Self::InvalidDirEntry(InvalidDirEntryKind::InvalidINode)    => FSErrorCode::DirEntryInvalidINode,
+			Self::InvalidDirEntry(InvalidDirEntryKind::INodeOOB)        => FSErrorCode::DirEntryINodeOOB,
+			Self::InvalidDirEntry(InvalidDirEntryKind::InvalidFileType) => FSErrorCode::DirEntryInvalidFileType,
 			
 			Self::InvalidDir(InvalidDirKind::None)                 => FSErrorCode::InvalidDir,
 			Self::InvalidDir(InvalidDirKind::EntriesOverfillBlock) => FSErrorCode::DirEntriesOverfillBlock,

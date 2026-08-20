@@ -40,8 +40,8 @@ impl DirEntry {
 		Self { inode, file_type, record_len, name_len: name_len as u16, name: name_arr }
 	}
 	pub fn free(size: u16) -> Self {
-		//! create an entry that represents a free region
-		Self { inode: INVALID_ADDRESS, file_type: FileType::File, record_len: size, name_len: 0, name: [0u8; Self::MAX_NAME] }
+		//! create an entry that represents a free region, with size equal to max(size, min_free_size)
+		Self { inode: INVALID_ADDRESS, file_type: FileType::File, record_len: size.max(Self::min_free_size()), name_len: 0, name: [0u8; Self::MAX_NAME] }
 	}
 
 	pub fn is_free(&self) -> bool {
@@ -59,6 +59,12 @@ impl DirEntry {
 		res += 3;
 		(res >> 2) << 2
 	}
+	pub fn min_free_size() -> u16 {
+		let mut res = 4 + 2; // just inode and record length
+		res += 3;
+		(res >> 2) << 2
+	}
+
 
 	pub fn serialize(&self, buf: &mut [u8; BLOCK_SIZE], init_offset: usize) {
 		let mut offset = init_offset;
@@ -71,6 +77,7 @@ impl DirEntry {
 			}};
 		}
 
+		// IF YOU CHANGE THIS: the minimum free region size depends on this order of serialization.
 		write_field!(self.inode);
 		write_field!(self.record_len);
 		if !self.is_free() {
