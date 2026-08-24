@@ -18,9 +18,6 @@ pub struct BitmapAllocator {
 }
 
 impl BitmapAllocator {
-	// pub const ERR_MAPPED_REGION_FULL: &str = "cannot allocate, mapped region full";
-	// pub const ERR_BITMAP_FULL: &str = "cannot allocate, bitmap full";
-
 
 	pub fn new(start: u32, size: u32, max_index: u32) -> Self {
 		Self { start, size, max_index, last_alloc: 0 }

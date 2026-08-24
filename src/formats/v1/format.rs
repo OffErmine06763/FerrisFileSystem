@@ -32,14 +32,31 @@ pub struct FormatV1 {
 
 impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 	fn create_directory(&mut self, device: &mut D, path: &str) -> FSResult<()> {
-		self.create(device, path, FileType::Directory)
+		self.create(device, path, FileType::Directory)?;
+		Ok(())
 	}
 	fn create_symlink(&mut self, device: &mut D, path: &str, path_tgt: &str) -> FSResult<()> {
-		self.create(device, path, FileType::Symlink)
-		// populate
+		let (mut inode, index) = self.create(device, path, FileType::Symlink)?;
+		
+		let data_block = self.superblock.data_start + inode.direct[0];
+		let mut buf = [0u8; BLOCK_SIZE];
+		buf[0..path_tgt.len()].copy_from_slice(path_tgt.as_bytes());
+		device.write_block(data_block, &buf)?;
+
+		inode.size = path_tgt.len() as u64;
+		self.inode_handler.write_inode(device, index, &inode)?;
+
+		#[cfg(debug_assertions)]
+		{
+			println!("Symlink '{}' linked to '{}'", path, path_tgt);
+			println!();
+		}
+
+		Ok(())
 	}
 	fn create_file(&mut self, device: &mut D, path: &str) -> FSResult<()> {
-		self.create(device, path, FileType::File)
+		self.create(device, path, FileType::File)?;
+		Ok(())
 	}
 
 
@@ -202,6 +219,7 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 
 		Ok(())
 	}
+
 
 	fn link(&mut self, device: &mut D, src: &str, dst: &str) -> FSResult<()> {
 		// FIND SOURCE
@@ -653,8 +671,9 @@ impl FormatV1 {
 
 
 
-	fn create<D: BlockDevice>(&mut self, device: &mut D, path_str: &str, file_type: FileType) -> FSResult<()> {
+	fn create<D: BlockDevice>(&mut self, device: &mut D, path_str: &str, file_type: FileType) -> FSResult<(INode, u32)> {
 		//! creates an empty directory/file/symlink
+		//! return: created inode and it's index
 		//! throws: InvalidInput(UnknownFileType)
 
 		// TODO: if any operation fails after the allocation, we should dealloc those blocks.
@@ -700,7 +719,7 @@ impl FormatV1 {
 		let mut inode = INode::empty(file_type, u16::MAX, now);
 		entry.inode = inode_index;
 
-		if file_type == FileType::Directory {
+		if file_type == FileType::Directory || file_type == FileType::Symlink {
 			inode.add_block(allocated_data[0]);
 		}
 		inode.size = match file_type {
@@ -747,7 +766,7 @@ impl FormatV1 {
 			match file_type {
 				FileType::Directory => println!("Created directory '{}'", path_str),
 				FileType::File      => println!("Created file '{}'", path_str),
-				FileType::Symlink   => todo!(),
+				FileType::Symlink   => println!("Created symlink '{}'", path_str),
 				FileType::Unknown   => panic!(),
 			}
 			println!();
@@ -792,7 +811,7 @@ impl FormatV1 {
 			println!();
 		}
 
-		Ok(())
+		Ok((inode, inode_index))
 	}
 
 
@@ -1266,6 +1285,8 @@ mod tests {
 	use super::*;
 	use crate::device::memory_device::MemoryDevice;
 
+	// TODO: test symlinks (creation and usage, also nested with symlink using symlinks, also self-referencing), file io (with and without symlinks)
+
 	
 	// FS SETUP
 	#[test]
@@ -1370,6 +1391,7 @@ mod tests {
 		Ok(())
 	}
 
+
 	// BASIC WORKFLOWS
 	#[test]
 	fn file_creation_deletion() -> FSResult<()> {
@@ -1414,6 +1436,260 @@ mod tests {
 	}
 
 
+	// SYMLINKS
+	#[test]
+	fn symlink() -> FSResult<()> {
+		// initialization
+		let size = 20;
+		let mut device = MemoryDevice::empty(size);
+		FormatV1::format(&mut device)?;
+
+		let mut ffs = FormatV1::mount(&mut device)?;
+
+		// Test cases:
+		// notation: the target of the symlink is within ()
+		// path of the file to open			| actual file location 
+		// symlink(file)		            = file
+		// symlink(dir/file) 	            = dir/file
+		// symlink(/file)		            = file
+		// symlink(/dir/file)               = dir/file
+		// dir/symlink(file)		        = dir/file
+		// dir/symlink(dir/file)	        = dir/dir/file
+		// dir/symlink(/file)		        = file
+		// dir/symlink(/dir/file)	        = dir/file
+		// dir/symlink(dir)/file 	        = dir/dir/file
+		// dir/symlink(/dir)/file   	    = dir/file
+		// symlink1(/dir/symlink2(/file))   = file
+		// symlink1(/dir/symlink2(file))    = dir/file
+		// symlink(./file)		            = file
+		// symlink(..)/file   	            = file
+		// dir/symlink(.)/file   	        = dir/file
+		// dir/symlink(./file)   	        = dir/file
+		// dir/symlink(..)/file   	        = file
+		// dir/symlink(../dir)/file   	    = dir/file
+
+		// symlink(file)		            = file
+		{
+			let filename = "file";
+			let symname = "sym";
+
+			// create files
+			create_file(&mut device, &mut ffs, filename)?;
+			create_symlink(&mut device, &mut ffs, symname, filename)?;
+
+			// I/O
+			test_symlink_io(&mut device, &mut ffs, filename, symname)?;
+
+			// deletion
+			delete_file(&mut device, &mut ffs, filename)?;
+			delete_symlink(&mut device, &mut ffs, symname)?;
+		}
+		// symlink(dir/file) 	            = dir/file
+		{
+			create_directory(&mut device, &mut ffs, "dir")?;
+			create_file(&mut device, &mut ffs, "dir/file")?;
+			create_symlink(&mut device, &mut ffs, "sym", "dir/file")?;
+			test_symlink_io(&mut device, &mut ffs, "dir/file", "sym")?;
+			delete_file(&mut device, &mut ffs, "dir/file")?;
+			delete_symlink(&mut device, &mut ffs, "sym")?;
+			delete_directory(&mut device, &mut ffs, "dir")?;
+		}
+		// symlink(/file)		            = file
+		{
+			create_file(&mut device, &mut ffs, "file")?;
+			create_symlink(&mut device, &mut ffs, "sym", "/file")?;
+			test_symlink_io(&mut device, &mut ffs, "file", "sym")?;
+			delete_file(&mut device, &mut ffs, "file")?;
+			delete_symlink(&mut device, &mut ffs, "sym")?;
+		}
+		// symlink(/dir/file)               = dir/file
+		{
+			create_directory(&mut device, &mut ffs, "dir")?;
+			create_file(&mut device, &mut ffs, "dir/file")?;
+			create_symlink(&mut device, &mut ffs, "sym", "/dir/file")?;
+			test_symlink_io(&mut device, &mut ffs, "dir/file", "sym")?;
+			delete_file(&mut device, &mut ffs, "dir/file")?;
+			delete_symlink(&mut device, &mut ffs, "sym")?;
+			delete_directory(&mut device, &mut ffs, "dir")?;
+		}
+		// dir/symlink(file)		        = dir/file
+		{
+			create_directory(&mut device, &mut ffs, "dir")?;
+			create_file(&mut device, &mut ffs, "dir/file")?;
+			create_symlink(&mut device, &mut ffs, "dir/sym", "file")?;
+			test_symlink_io(&mut device, &mut ffs, "dir/file", "dir/sym")?;
+			delete_file(&mut device, &mut ffs, "dir/file")?;
+			delete_symlink(&mut device, &mut ffs, "dir/sym")?;
+			delete_directory(&mut device, &mut ffs, "dir")?;
+		}
+		// dir/symlink(dir/file)	        = dir/dir/file
+		{
+			create_directory(&mut device, &mut ffs, "dir")?;
+			create_directory(&mut device, &mut ffs, "dir/dir")?;
+			create_file(&mut device, &mut ffs, "dir/dir/file")?;
+			create_symlink(&mut device, &mut ffs, "dir/sym", "dir/file")?;
+			test_symlink_io(&mut device, &mut ffs, "dir/dir/file", "dir/sym")?;
+			delete_file(&mut device, &mut ffs, "dir/dir/file")?;
+			delete_symlink(&mut device, &mut ffs, "dir/sym")?;
+			delete_directory(&mut device, &mut ffs, "dir/dir")?;
+			delete_directory(&mut device, &mut ffs, "dir")?;
+		}
+		// dir/symlink(/file)		        = file
+		{
+			create_directory(&mut device, &mut ffs, "dir")?;
+			create_file(&mut device, &mut ffs, "file")?;
+			create_symlink(&mut device, &mut ffs, "dir/sym", "/file")?;
+			test_symlink_io(&mut device, &mut ffs, "file", "dir/sym")?;
+			delete_file(&mut device, &mut ffs, "file")?;
+			delete_symlink(&mut device, &mut ffs, "dir/sym")?;
+			delete_directory(&mut device, &mut ffs, "dir")?;
+		}
+		// dir/symlink(/dir/file)	        = dir/file
+		{
+			create_directory(&mut device, &mut ffs, "dir")?;
+			create_file(&mut device, &mut ffs, "dir/file")?;
+			create_symlink(&mut device, &mut ffs, "dir/sym", "/dir/file")?;
+			test_symlink_io(&mut device, &mut ffs, "dir/file", "dir/sym")?;
+			delete_file(&mut device, &mut ffs, "dir/file")?;
+			delete_symlink(&mut device, &mut ffs, "dir/sym")?;
+			delete_directory(&mut device, &mut ffs, "dir")?;
+		}
+		// dir/symlink(dir)/file 	        = dir/dir/file
+		{
+			create_directory(&mut device, &mut ffs, "dir")?;
+			create_directory(&mut device, &mut ffs, "dir/dir")?;
+			create_file(&mut device, &mut ffs, "dir/dir/file")?;
+			create_symlink(&mut device, &mut ffs, "dir/sym", "dir")?;
+			test_symlink_io(&mut device, &mut ffs, "dir/dir/file", "dir/sym/file")?;
+			delete_file(&mut device, &mut ffs, "dir/dir/file")?;
+			delete_symlink(&mut device, &mut ffs, "dir/sym")?;
+			delete_directory(&mut device, &mut ffs, "dir/dir")?;
+			delete_directory(&mut device, &mut ffs, "dir")?;
+		}
+		// dir/symlink(/dir)/file   	    = dir/file
+		{
+			create_directory(&mut device, &mut ffs, "dir")?;
+			create_file(&mut device, &mut ffs, "dir/file")?;
+			create_symlink(&mut device, &mut ffs, "dir/sym", "/dir")?;
+			test_symlink_io(&mut device, &mut ffs, "dir/file", "dir/sym/file")?;
+			delete_file(&mut device, &mut ffs, "dir/file")?;
+			delete_symlink(&mut device, &mut ffs, "dir/sym")?;
+			delete_directory(&mut device, &mut ffs, "dir")?;
+		}
+		// symlink1(/dir/symlink2(/file))   = file
+		{
+			create_directory(&mut device, &mut ffs, "dir")?;
+			create_file(&mut device, &mut ffs, "file")?;
+			create_symlink(&mut device, &mut ffs, "dir/sym2", "/file")?;
+			create_symlink(&mut device, &mut ffs, "sym1", "/dir/sym2")?;
+			test_symlink_io(&mut device, &mut ffs, "file", "sym1")?;
+			delete_file(&mut device, &mut ffs, "file")?;
+			delete_symlink(&mut device, &mut ffs, "sym1")?;
+			delete_symlink(&mut device, &mut ffs, "dir/sym2")?;
+			delete_directory(&mut device, &mut ffs, "dir")?;
+		}
+		// symlink1(/dir/symlink2(file))    = dir/file
+		{
+			create_directory(&mut device, &mut ffs, "dir")?;
+			create_file(&mut device, &mut ffs, "dir/file")?;
+			create_symlink(&mut device, &mut ffs, "dir/sym2", "file")?;
+			create_symlink(&mut device, &mut ffs, "sym1", "/dir/sym2")?;
+			test_symlink_io(&mut device, &mut ffs, "dir/file", "sym1")?;
+			delete_file(&mut device, &mut ffs, "dir/file")?;
+			delete_symlink(&mut device, &mut ffs, "sym1")?;
+			delete_symlink(&mut device, &mut ffs, "dir/sym2")?;
+			delete_directory(&mut device, &mut ffs, "dir")?;
+		}
+		// symlink(./file)		            = file
+		{
+			create_file(&mut device, &mut ffs, "file")?;
+			create_symlink(&mut device, &mut ffs, "sym", "./file")?;
+			test_symlink_io(&mut device, &mut ffs, "file", "sym")?;
+			delete_file(&mut device, &mut ffs, "file")?;
+			delete_symlink(&mut device, &mut ffs, "sym")?;
+		}
+		// symlink(..)/file   	            = file
+		{
+			create_file(&mut device, &mut ffs, "file")?;
+			create_symlink(&mut device, &mut ffs, "sym", "..")?;
+			test_symlink_io(&mut device, &mut ffs, "file", "sym/file")?;
+			delete_file(&mut device, &mut ffs, "file")?;
+			delete_symlink(&mut device, &mut ffs, "sym")?;
+		}
+		// dir/symlink(.)/file   	        = dir/file
+		{
+			create_directory(&mut device, &mut ffs, "dir")?;
+			create_file(&mut device, &mut ffs, "dir/file")?;
+			create_symlink(&mut device, &mut ffs, "dir/sym", ".")?;
+			test_symlink_io(&mut device, &mut ffs, "dir/file", "dir/sym/file")?;
+			delete_file(&mut device, &mut ffs, "dir/file")?;
+			delete_symlink(&mut device, &mut ffs, "dir/sym")?;
+			delete_directory(&mut device, &mut ffs, "dir")?;
+		}
+		// dir/symlink(./file)   	        = dir/file
+		{
+			create_directory(&mut device, &mut ffs, "dir")?;
+			create_file(&mut device, &mut ffs, "dir/file")?;
+			create_symlink(&mut device, &mut ffs, "dir/sym", "./file")?;
+			test_symlink_io(&mut device, &mut ffs, "dir/file", "dir/sym")?;
+			delete_file(&mut device, &mut ffs, "dir/file")?;
+			delete_symlink(&mut device, &mut ffs, "dir/sym")?;
+			delete_directory(&mut device, &mut ffs, "dir")?;
+		}
+		// dir/symlink(..)/file   	        = file
+		{
+			create_directory(&mut device, &mut ffs, "dir")?;
+			create_file(&mut device, &mut ffs, "file")?;
+			create_symlink(&mut device, &mut ffs, "dir/sym", "..")?;
+			test_symlink_io(&mut device, &mut ffs, "file", "dir/sym/file")?;
+			delete_file(&mut device, &mut ffs, "file")?;
+			delete_symlink(&mut device, &mut ffs, "dir/sym")?;
+			delete_directory(&mut device, &mut ffs, "dir")?;
+		}
+		// dir/symlink(../dir)/file   	    = dir/file
+		{
+			create_directory(&mut device, &mut ffs, "dir")?;
+			create_file(&mut device, &mut ffs, "dir/file")?;
+			create_symlink(&mut device, &mut ffs, "dir/sym", "../dir")?;
+			test_symlink_io(&mut device, &mut ffs, "dir/file", "dir/sym/file")?;
+			delete_file(&mut device, &mut ffs, "dir/file")?;
+			delete_symlink(&mut device, &mut ffs, "dir/sym")?;
+			delete_directory(&mut device, &mut ffs, "dir")?;
+		}
+
+		assert!(ffs.check_integrity(&mut device)?.is_ok());
+
+		Ok(())
+	}
+
+
+	#[test]
+	fn invalid_symlink() -> FSResult<()> {
+		// initialization
+		let size = 20;
+		let mut device = MemoryDevice::empty(size);
+		FormatV1::format(&mut device)?;
+
+		let mut ffs = FormatV1::mount(&mut device)?;
+
+		{
+			let filename = "file";
+			let symname = "sym";
+
+			// create a symlink without the target file
+			create_symlink(&mut device, &mut ffs, symname, filename)?;
+
+			let res = ffs.open_file(&mut device, symname);
+			assert_error_code(res, FSErrorCode::DoesNotExist);
+
+			delete_symlink(&mut device, &mut ffs, symname)?;
+		}
+
+		assert!(ffs.check_integrity(&mut device)?.is_ok());
+
+		Ok(())
+	}
+
 	// ERRORS
 	#[test]
 	fn non_empty_directory_deletion() -> FSResult<()> {
@@ -1432,15 +1708,7 @@ mod tests {
 		
 		// delete dir
 		let res = ffs.delete(&mut device, dirname);
-		match res {
-			Ok(_) => { assert!(false) }
-			Err(e) => {
-				match e {
-					FSError::DirectoryNotEmpty => {},
-					_ => assert!(false),
-				}
-			}
-		}
+		assert_error_code(res, FSErrorCode::DirectoryNotEmpty);
 
 		assert!(ffs.check_integrity(&mut device)?.is_ok());
 
@@ -1561,6 +1829,48 @@ mod tests {
 
 	// test utils
 
+	fn test_symlink_io<D: BlockDevice>(device: &mut D, ffs: &mut FormatV1, file_path: &str, sym_path: &str) -> FSResult<()> {
+		// I/O from the symlink
+		let data = b"data";
+
+		let symlink = ffs.open_file(device, sym_path)?;
+		let count = ffs.write(device, &symlink, data)?;
+		assert_eq!(count, data.len());
+
+		let mut buf = [0u8; BLOCK_SIZE];
+		ffs.seek(device, &symlink, SeekFrom::Start(0))?;
+		let count = ffs.read(device, &symlink, buf.as_mut_slice())?;
+		assert_eq!(count, data.len());
+		for b in 0..count {
+			assert_eq!(buf[b], data[b]);
+		}
+
+
+		// I/O from the file
+		let file = ffs.open_file(device, file_path)?;
+		let count = ffs.read(device, &file, buf.as_mut_slice())?;
+		assert_eq!(count, data.len());
+		for b in 0..count {
+			assert_eq!(buf[b], data[b]);
+		}
+
+		let count = ffs.write(device, &file, data)?;
+		assert_eq!(count, data.len());
+
+		// Again from the symlink
+		let count = ffs.read(device, &symlink, buf.as_mut_slice())?;
+		assert_eq!(count, data.len());
+		for b in 0..count {
+			assert_eq!(buf[b], data[b]);
+		}
+
+
+		// close files
+		ffs.close_file(device, &symlink)?;
+		ffs.close_file(device, &file)?;
+
+		Ok(())
+	}
 
 
 
@@ -1601,7 +1911,7 @@ mod tests {
 		assert!(entry.inode < ffs.inode_allocator.max_index());
 		assert!(ffs.inode_allocator.is_allocated(device, entry.inode)?);
 
-		// check directory inode validity
+		// check file inode validity
 		let inode = resolve_result.target_inode;
 		let dir_inode_ind = resolve_result.target_inode_index;
 		assert_eq!(inode.file_type, file_type);
@@ -1690,6 +2000,61 @@ mod tests {
 		Ok(inode)
 	}
 
+	fn create_symlink<D: BlockDevice>(device: &mut D, ffs: &mut FormatV1, path_str: &str, tgt: &str) -> FSResult<INode> {
+		//! creates a valid symlink
+
+		let file_type = FileType::Symlink;
+		let initial_free_data = ffs.superblock.free_data;
+		let initial_free_inodes = ffs.superblock.free_inodes;
+
+		let path = Path::new(path_str);
+		let parent = path.parent().unwrap();
+		let filename = path.file_name().unwrap().to_str().unwrap();
+
+		ffs.create_symlink(device, path_str, tgt)?;
+
+		// check update of the metadata
+		assert_eq!(ffs.superblock.free_data, initial_free_data - 1);
+		assert_eq!(ffs.superblock.free_inodes, initial_free_inodes - 1);
+
+		// check the validity of the directory entry
+		let resolve_result = ffs.directory_handler.resolve(device, path, ffs.superblock.root_inode, &ffs.inode_handler, false)?;
+		let parent_inode_ind = resolve_result.parent_inode_index;
+		let entry = resolve_result.dir_entry;
+		let block = resolve_result.dir_entry_block_index;
+		let offset = resolve_result.dir_entry_offset;
+
+		assert_eq!(entry.file_type, file_type);
+		assert_eq!(entry.name_len, filename.len() as u16);
+		assert_eq!(entry.record_len, DirEntry::min_record_len(entry.name_len));
+		assert!(entry.inode != INVALID_ADDRESS);
+		assert!(entry.inode < ffs.inode_allocator.max_index());
+		assert!(ffs.inode_allocator.is_allocated(device, entry.inode)?);
+
+		// check symlink inode validity
+		let inode = resolve_result.target_inode;
+		let dir_inode_ind = resolve_result.target_inode_index;
+		assert_eq!(inode.file_type, file_type);
+		assert_eq!(inode.links, 1);
+		assert_eq!(inode.size, tgt.len() as u64);
+		assert_eq!(inode.blocks, 1);
+
+		// check symlink content
+		let mut buf = [0u8; BLOCK_SIZE];
+		device.read_block(inode.direct[0] + ffs.superblock.data_start, &mut buf)?;
+		
+		let mut expected = [0u8; BLOCK_SIZE];
+		expected[0..tgt.len()].copy_from_slice(tgt.as_bytes());
+
+		for b in 0..BLOCK_SIZE {
+			assert_eq!(buf[b], expected[b]);
+		}
+
+
+		Ok(inode)
+	}
+
+
 
 	fn delete_file<D: BlockDevice>(device: &mut D, ffs: &mut FormatV1, path_str: &str) -> FSResult<()> {
 		//! deletes a valid file
@@ -1757,6 +2122,38 @@ mod tests {
 		Ok(())
 	}
 
+	fn delete_symlink<D: BlockDevice>(device: &mut D, ffs: &mut FormatV1, path_str: &str) -> FSResult<()> {
+		//! deletes a valid symlink
+
+		let initial_free_data = ffs.superblock.free_data;
+		let initial_free_inodes = ffs.superblock.free_inodes;
+
+		let path = Path::new(path_str);
+
+		// get the file inode
+		let resolve_result = ffs.directory_handler.resolve(device, path, ffs.superblock.root_inode, &ffs.inode_handler, false)?;
+		let inode = resolve_result.target_inode;
+		let inode_ind = resolve_result.target_inode_index;
+
+		// delete the file
+		ffs.delete(device, path_str)?;
+
+		// check file existance
+		let tmp = ffs.file_exists(device, path_str)?;
+		assert!(!tmp.0);
+
+		// check update of the metadata
+		assert_eq!(ffs.superblock.free_data, initial_free_data + inode.blocks as u32);
+		assert_eq!(ffs.superblock.free_inodes, initial_free_inodes + 1);
+
+		// check bitmap
+		assert!(!ffs.inode_allocator.is_allocated(device, inode_ind)?);
+		for b in 0..inode.blocks {
+			assert!(!ffs.block_allocator.is_allocated(device, inode.direct[b as usize])?);
+		}
+		
+		Ok(())
+	}
 
 
 

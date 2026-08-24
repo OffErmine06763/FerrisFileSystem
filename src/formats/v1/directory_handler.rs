@@ -55,6 +55,8 @@ impl DirectoryHandler {
 
 
 	fn _resolve_symlink<D: BlockDevice>(&self, device: &mut D, inode: &INode, parent_inode_ind: u32, inode_handler: &INodeTableHandler, it: u32) -> FSResult<ResolutionResult> {
+		//! follows the symlink, reading its data block and resolving the path in it.
+
 		let block_ind = self.data_start + inode.direct[0];
 		let mut buf = [0u8; BLOCK_SIZE];
 		device.read_block(block_ind, &mut buf)?;
@@ -62,7 +64,9 @@ impl DirectoryHandler {
 		// TODO: as always, handle invalid strings
 		let target_path = Path::new(std::str::from_utf8(target).unwrap());
 
-		if target_path.is_absolute() {
+		// TODO: check that the rest of the project (specifically with paths) is not platform dependent, just focus on linux for now
+		// NOTE: the following CANNOT be replaced by .is_absolute() since it's platform dependent (windows X:\, linux \)
+		if target[0] == b'/' {
 			return self._resolve(device, &target_path, self.root_inode_ind, inode_handler, true, it + 1);
 		} else {
 			return self._resolve(device, &target_path, parent_inode_ind, inode_handler, true, it + 1);
@@ -71,7 +75,8 @@ impl DirectoryHandler {
 	fn _resolve<D: BlockDevice>(&self, device: &mut D, path: &Path, src: u32, inode_handler: &INodeTableHandler, resolve_final_symlink: bool, it: u32) -> FSResult<ResolutionResult> {
 		//! returns: inode of the target, inode index of the target, inode index of the parent directory, RELATIVE block index and offset of the entry
 		//! if the target is a symlink and resolve_final_symlink is true, the values returned are those of the file pointed at by the symlink
-		//! if path is empty ("", ".", "/") returns src 
+		//! if path is empty ("", ".") returns (src inode, src index, src index, 0, 0, free)
+		//! if path is root ("/") returns (root inode, root index, root index, 0, 0, free)
 
 		let mut cur_inode_ind = src;
 		let mut cur_inode = inode_handler.read_inode(device, src)?;
@@ -80,7 +85,7 @@ impl DirectoryHandler {
 		let mut entry_block = 0;
 		let mut entry = DirEntry::free(0);
 
-
+		// early-out if the tgt is empty, self or root
 		if path == Path::new("") || path == Path::new(".") {
 			return Ok(ResolutionResult { 
 				target_inode: cur_inode, target_inode_index: cur_inode_ind, 
@@ -99,17 +104,18 @@ impl DirectoryHandler {
 			});
 		}
 
+		
 		let mut progress = PathBuf::new();
-		let components = path.components();
-		let final_component = path.file_name().unwrap().to_str().unwrap();
-
+		let mut components = path.components().peekable();
+		
 		// for every component of the path
-		for comp in components {
+		while let Some(comp) = components.next() {
 			// comp can be CurDir or RootDir only at the start of the path
-			if comp == Component::CurDir || comp == Component::RootDir { 
+			if comp == Component::CurDir || comp == Component::RootDir {
 				continue;
 			}
 			progress = progress.join(comp);
+			let is_final_component = components.peek().is_none();
 
 			let comp_name = Self::path_component_bytes(&comp);
 
@@ -127,7 +133,6 @@ impl DirectoryHandler {
 			let inode = inode_handler.read_inode(device, entry.inode)?;
 
 			// if the inode is a symlink, we have to follow it, otherwise just prepare the next iteration
-			let is_final_component = comp.as_os_str().to_str().unwrap() == final_component;
 			if inode.file_type == FileType::Symlink && (!is_final_component || resolve_final_symlink) {
 				if it >= 40 {
 					return Err(FSError::MaximumSymlinkDepthReached);
@@ -135,12 +140,13 @@ impl DirectoryHandler {
 					return Err(FSError::EmptySymlink{ path: progress.to_string_lossy().into_owned() });
 				}
 				
+				// here current inode index is still the parent's
 				let res = self._resolve_symlink(device, &inode, cur_inode_ind, inode_handler, it)?;
-				cur_inode = res.target_inode;
-				cur_inode_ind = res.target_inode_index;
+				cur_inode        = res.target_inode;
+				cur_inode_ind    = res.target_inode_index;
 				parent_inode_ind = res.parent_inode_index;
-				entry_block = res.dir_entry_block_index;
-				entry_offset = res.dir_entry_offset;
+				entry_block      = res.dir_entry_block_index;
+				entry_offset     = res.dir_entry_offset;
 
 				if cur_inode.file_type != FileType::Directory && !is_final_component {
 					return Err(FSError::NotADirectory{ path: progress.to_string_lossy().into_owned() });
@@ -148,14 +154,14 @@ impl DirectoryHandler {
 
 			} else if inode.file_type == FileType::Directory {
 				parent_inode_ind = cur_inode_ind;
-				cur_inode = inode;
-				cur_inode_ind = entry.inode;
+				cur_inode        = inode;
+				cur_inode_ind    = entry.inode;
 			} else if !is_final_component {
 				return Err(FSError::NotADirectory{ path: progress.to_string_lossy().into_owned() });
 			} else { // final File component (or Symlink if not to resolve)
 				parent_inode_ind = cur_inode_ind;
-				cur_inode = inode;
-				cur_inode_ind = entry.inode;
+				cur_inode        = inode;
+				cur_inode_ind    = entry.inode;
 			}
 		}
 
@@ -166,72 +172,13 @@ impl DirectoryHandler {
 		})
 	}
 	pub fn resolve<D: BlockDevice>(&self, device: &mut D, path: &Path, src: u32, inode_handler: &INodeTableHandler, resolve_final_symlink: bool) -> FSResult<ResolutionResult> {
-		//! returns: inode of the target, inode index of the target, inode index of the parent directory, block index and offset of the entry
+		//! returns: inode of the target, inode index of the target, inode index of the parent directory, RELATIVE block index and offset of the entry
 		//! if the target is a symlink and resolve_final_symlink is true, the values returned are those of the file pointed at by the symlink
+		//! if path is empty ("", ".") returns (src inode, src index, src index, 0, 0, free)
+		//! if path is root ("/") returns (root inode, root index, root index, 0, 0, free)
 
 		self._resolve(device, path, src, inode_handler, resolve_final_symlink, 0)
 	}
-
-
-	//pub fn traverse<D: BlockDevice>(&self, device: &mut D, path: &Path, src: u32, inode_handler: &INodeTableHandler) -> FSResult<u32> {
-	//	//! starting from the given src directory, returns the directory "src/path/"
-	//	//! throws: DirectoryDoesNotExist or NotADirectory
-		
-	//	let mut cur_inode_ind = src;
-	//	let mut cur_dir = inode_handler.read_inode(device, src)?;
-		
-	//	// for every component of the path
-	//	let mut progress = PathBuf::new();
-	//	for comp in path.components() {
-	//		// comp can be CurDir or RootDir only at the start of the path
-	//		if comp == Component::CurDir || comp == Component::RootDir { 
-	//			continue;
-	//		}
-	//		progress = progress.join(comp);
-
-	//		let comp_name = Self::path_component_bytes(&comp);
-
-	//		// check if the current directory contains the component
-	//		let entry = self.find_entry(device, &cur_dir, comp_name)?;
-	//		if entry.is_none() {
-	//			return Err(FSError::DirectoryDoesNotExist{ path: progress.to_string_lossy().into_owned() });
-	//		}
-	//		let inode_ind = entry.unwrap().0.inode;
-	//		if inode_ind == INVALID_ADDRESS {
-	//			return Err(FSError::InvalidDirEntry(InvalidDirEntryKind::InvalidINode));
-	//		}
-
-	//		let cur_inode = inode_handler.read_inode(device, inode_ind)?;
-			
-	//		if cur_inode.file_type == FileType::Symlink {
-	//			if cur_inode.size == 0 || cur_inode.blocks == 0 {
-	//				return Err(FSError::EmptySymlink{ path: progress.to_string_lossy().into_owned() });
-	//			}
-
-	//			let block_ind = self.data_start + cur_inode.direct[0];
-	//			let mut buf = [0u8; BLOCK_SIZE];
-	//			device.read_block(block_ind, &mut buf)?;
-	//			let target = &buf[0..cur_inode.size as usize];
-	//			// TODO: as always, handle invalid strings
-	//			let target_path = Path::new(std::str::from_utf8(target).unwrap());
-
-	//			if target[0] == b'/' {
-	//				cur_inode_ind = self.traverse(device, &target_path, root, inode_handler)?;
-	//			} else {
-	//				cur_inode_ind = self.traverse(device, &target_path, cur_inode_ind, inode_handler)?;
-	//			}
-	//			cur_dir = inode_handler.read_inode(device, cur_inode_ind)?;
-
-	//		} else if cur_dir.file_type == FileType::Directory {
-	//			cur_dir = cur_inode;
-	//			cur_inode_ind = inode_ind;
-	//		} else {
-	//			return Err(FSError::NotADirectory{ path: progress.to_string_lossy().into_owned() });
-	//		}
-	//	}
-
-	//	Ok(cur_inode_ind)
-	//}
 
 
 	pub fn can_fit<D: BlockDevice>(&self, device: &mut D, dir: &INode, to_insert: &DirEntry) -> FSResult<Option<(u32, u16)>> {
@@ -243,9 +190,14 @@ impl DirectoryHandler {
 		self.iterate(device, dir, |entry: DirEntry, block: u32, offset: usize| -> bool {
 			// we return the first free region big enough.
 			// deletion behavior guarantees that there will not be two contiguous free regions
-			if entry.is_free() && entry.record_len >= to_insert.record_len + DirEntry::min_free_size() {
-				res = Ok(Some((block, offset as u16)));
-				return true;
+			if entry.is_free() {
+				// a region is "big enough" if
+				// - it can fit the entry to_insert and another free region record, or
+				// - it is as big as to_insert, which leads to the removal of the free region upon insertion.
+				if (entry.record_len >= to_insert.record_len + DirEntry::min_free_size()) || (entry.record_len == to_insert.record_len) {
+					res = Ok(Some((block, offset as u16)));
+					return true;
+				}
 			}
 
 			return false;
@@ -260,6 +212,8 @@ impl DirectoryHandler {
 		//! expects the directory inode to have enough allocated blocks.
 		//! the entries must be correctly formatted: each block utilized must be filled entirely
 		//! throws: InvalidInput(DirEntriesOverfillBlock, DirEntriesOverfillBlock)  // TODO: for all important functions add a proper throws and return
+
+		// TODO: what about adjacent free regions...
 
 		// First pass: validate the directory layout.
 		let mut offset = 0usize;
@@ -314,9 +268,9 @@ impl DirectoryHandler {
 	}
 
 
-	pub fn add_entry_here<D: BlockDevice>(&self, device: &mut D, _dir: &INode, entry: &mut DirEntry, block: u32, free_region_offset: u16) -> FSResult<()> {
-		//! adds the file at the specified block, by shrinking the given free region.
-		//! throws: InvalidInput(DirFreeRegionTooSmall, DiEntryNotFree)
+	pub fn add_entry_here<D: BlockDevice>(&self, device: &mut D, _dir: &INode, entry: &DirEntry, block: u32, free_region_offset: u16) -> FSResult<()> {
+		//! adds the file at the specified block, by shrinking and moving forward the given free region.
+		//! throws: InvalidInput(DirFreeRegionTooSmall, DirEntryNotFree)
 
 		// read the whole block (might contain other entries)
 		let mut buf = [0u8; BLOCK_SIZE];
@@ -324,35 +278,43 @@ impl DirectoryHandler {
 
 		// deserialize the free region data
 		let mut free_region = DirEntry::deserialize(&buf, free_region_offset as usize);
-		if free_region.record_len < entry.record_len + DirEntry::min_free_size() {
-			return Err(FSError::DirFreeRegionTooSmall);
-		} if !free_region.is_free() {
+
+		// validate the free region, it must be either as big as the new entry or big enough to store also a new free_entry
+		if !free_region.is_free() {
 			return Err(FSError::DirEntryNotFree);
+		} if free_region.record_len != entry.record_len && free_region.record_len < entry.record_len + DirEntry::min_free_size() {
+			return Err(FSError::DirFreeRegionTooSmall);
 		}
 
 		// move it forward (if not fully utilized)
 		free_region.record_len -= entry.record_len;
-		if free_region.record_len > DirEntry::min_free_size() {
+		if free_region.record_len > DirEntry::min_free_size() { // this if should always be true if free_region.record_len != 0
 			free_region.serialize(&mut buf, (free_region_offset + entry.record_len) as usize);
 		}
 
 		// serialize the new entry
 		entry.serialize(&mut buf, free_region_offset as usize);
-		
 		device.write_block(self.data_start + block, &buf)?;
 
 		Ok(())
 	}
 	pub fn add_entry_grow<D: BlockDevice>(&self, device: &mut D, _dir: &INode, entry: &DirEntry, block: u32) -> FSResult<()> {
-		//! adds the file at the specified block.
+		//! adds the file at the start of the specified block.
+		//! if it doesn't occupy the whole block, also writes a record for the free region.
 		//! NOTE: the inode itself isn't modified, so the caller should add the block to the direct/indirect and increase the inode.size
 
 		let mut buf = [0u8; BLOCK_SIZE];
+		let remainder = BLOCK_SIZE as u16 - entry.record_len;
+
+		// the following shouldn't happen, since the maximum size of an entry is strictly less than BLOCK_SIZE
+		if remainder != 0 && remainder < DirEntry::min_free_size() {
+			return Err(FSError::DirFreeRegionTooSmall);
+		}
 		
 		entry.serialize(&mut buf, 0);
 
-		if BLOCK_SIZE as u16 - entry.record_len > 0 {
-			let free = DirEntry::free(BLOCK_SIZE as u16 - entry.record_len);
+		if remainder > 0 {
+			let free = DirEntry::free(remainder);
 			free.serialize(&mut buf, entry.record_len as usize);
 		}
 		
@@ -363,8 +325,8 @@ impl DirectoryHandler {
 
 
 	pub fn free_region<D: BlockDevice>(&self, device: &mut D, _dir: &INode, block: u32, offset: u16) -> FSResult<u16> {
-		//! marks the specified region as free, potentially merging with adjacent free regions
-		//! return: record length of the freed entry
+		//! marks the specified region as free, potentially merging with adjacent free regions.
+		//! return: record length of the freed entry.
 		//! throws: InvalidInput(OffsetNotAtDirEntryStart)
 		
 		// read the whole block (might contain other entries)
@@ -412,7 +374,8 @@ impl DirectoryHandler {
 			}
 		}
 		
-		// create the entry corresponding to the new free region
+		// create the entry corresponding to the new free region.
+		// since the smallest entry is bigger than the minimum free region size, this is guaranteed to not overwrite the next (occupied) entry
 		let free_entry = DirEntry::free(free_region_size);
 		free_entry.serialize(&mut buf, free_region_start as usize);
 		
@@ -523,13 +486,190 @@ impl DirectoryHandler {
 
 
 
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::device::memory_device::MemoryDevice;
+	use crate::formats::v1::format::FormatV1;
+	use crate::formats::v1::superblock::Superblock;
 
-#[test]
-fn directory_handler() -> io::Result<()> {
-	return Ok(());
 
-	// TODO: test adding and removing entries from a "fake" directory.
-	//		 don't even have to format the device, just to test if it handles
-	//       correctly the variable size used/free entries.
+	#[test]
+	fn write_insert_remove() -> FSResult<()> {
+		// initialize the device with a proper root directory
+		let mut device = MemoryDevice::empty(20);
+		FormatV1::format(&mut device)?;
+
+		// read the superblock of the device
+		let mut buf = [0u8; BLOCK_SIZE];
+		device.read_block(0, &mut buf)?;
+		let superblock = Superblock::deserialize(&buf);
+
+		// create the handlers we need
+		let directory_handler = DirectoryHandler::new(superblock.data_start, superblock.root_inode);
+		let inode_handler = INodeTableHandler::new(superblock.inode_table_start, superblock.inode_table_blocks);
+
+		let mut root_inode = inode_handler.read_inode(&mut device, superblock.root_inode)?;
+		root_inode.add_block(root_inode.direct[0] + 1);
+
+		
+		// create dummy entry
+		let name = "banana";
+		let to_insert = DirEntry::new(5, FileType::File, name);
+
+		// find a spot to insert it
+		let fit_res = directory_handler.can_fit(&mut device, &root_inode, &to_insert)?;
+		assert!(fit_res.is_some());
+		let (block, offset) = fit_res.unwrap();
+		assert_eq!(block, root_inode.direct[0]);
+		assert!(offset < BLOCK_SIZE as u16);
+
+		
+		// insert it a bunch of times
+		directory_handler.add_entry_here(&mut device, &root_inode, &to_insert, block, offset)?;
+		directory_handler.add_entry_here(&mut device, &root_inode, &to_insert, block, offset + to_insert.record_len)?;
+		directory_handler.add_entry_here(&mut device, &root_inode, &to_insert, block, offset + to_insert.record_len * 2)?;
+		
+		
+		// find it
+		let res = directory_handler.find_entry(&mut device, &root_inode, name.as_bytes())?;
+		assert!(res.is_some());
+		assert_eq!(res.unwrap().1, block);
+		assert_eq!(res.unwrap().2 as u16, offset);
+
+
+		// validate manually cause all entries have the same name
+		device.read_block(superblock.data_start + block, &mut buf)?;
+		let entry = DirEntry::deserialize(&buf, offset as usize);
+		assert_entry(&entry, &to_insert);
+		let entry = DirEntry::deserialize(&buf, (offset + to_insert.record_len) as usize);
+		assert_entry(&entry, &to_insert);
+		let entry = DirEntry::deserialize(&buf, (offset + to_insert.record_len * 2) as usize);
+		assert_entry(&entry, &to_insert);
+
+
+		// remove the first
+		let freed = directory_handler.free_region(&mut device, &root_inode, block, offset)?;
+		assert_eq!(freed, to_insert.record_len);
+		device.read_block(superblock.data_start + block, &mut buf)?;
+		let entry = DirEntry::deserialize(&buf, offset as usize);
+		assert!(entry.is_free());
+		assert_eq!(entry.record_len, to_insert.record_len);
+
+		// remove the second: this should merge with the free region left by the first entry
+		let freed = directory_handler.free_region(&mut device, &root_inode, block, offset + to_insert.record_len)?;
+		assert_eq!(freed, to_insert.record_len);
+		device.read_block(superblock.data_start + block, &mut buf)?;
+		let entry = DirEntry::deserialize(&buf, offset as usize);
+		assert!(entry.is_free());
+		assert_eq!(entry.record_len, to_insert.record_len * 2);
+
+		// remove the third: this should merge the adjacent free entries
+		let freed = directory_handler.free_region(&mut device, &root_inode, block, offset + to_insert.record_len * 2)?;
+		assert_eq!(freed, to_insert.record_len);
+		device.read_block(superblock.data_start + block, &mut buf)?;
+		let entry = DirEntry::deserialize(&buf, offset as usize);
+		assert!(entry.is_free());
+		assert_eq!(entry.record_len, BLOCK_SIZE as u16 - DirEntry::min_record_len(1) - DirEntry::min_record_len(2));
+
+
+		// add the entry in an empty block
+		directory_handler.add_entry_grow(&mut device, &root_inode, &to_insert, root_inode.direct[1])?;
+		device.read_block(superblock.data_start + root_inode.direct[1], &mut buf)?;
+		let entry = DirEntry::deserialize(&buf, 0);
+		assert_entry(&entry, &to_insert);
+		let entry = DirEntry::deserialize(&buf, to_insert.record_len as usize);
+		assert_entry(&entry, &DirEntry::free(BLOCK_SIZE as u16 - to_insert.record_len));
+
+
+		// find it
+		let res = directory_handler.find_entry(&mut device, &root_inode, name.as_bytes())?;
+		assert!(res.is_some());
+		assert_eq!(res.unwrap().1, root_inode.direct[1]);
+		assert_eq!(res.unwrap().2 as u16, 0);
+
+
+		Ok(())
+	}
+
+
+	#[test]
+	fn write_full_directory() -> FSResult<()> {
+		// initialize the device with a proper root directory
+		let mut device = MemoryDevice::empty(20);
+		FormatV1::format(&mut device)?;
+
+		// read the superblock of the device
+		let mut buf = [0u8; BLOCK_SIZE];
+		device.read_block(0, &mut buf)?;
+		let superblock = Superblock::deserialize(&buf);
+
+		// create the handlers we need
+		let directory_handler = DirectoryHandler::new(superblock.data_start, superblock.root_inode);
+		let inode_handler = INodeTableHandler::new(superblock.inode_table_start, superblock.inode_table_blocks);
+
+
+		// create a directory
+		let self_inode_ind = 3;
+		let parent_inode_ind = 2;
+		let mut directory = Directory::new(self_inode_ind, parent_inode_ind);
+		let mut inode = INode::empty(FileType::Directory, 0, 0);
+		inode.add_block(5);
+		inode.add_block(6);
+
+		// create dummy entry
+		let name = "banana";
+		let to_insert = DirEntry::new(5, FileType::File, name);
+
+		// insert manually some entries
+		let mut layout = vec![to_insert.clone(), to_insert.clone(), DirEntry::free(50), to_insert.clone()];
+		directory.entries.pop();
+		directory.entries.append(&mut layout);
+
+		let mut len = 0;
+		for e in &directory.entries {
+			len += e.record_len;
+		}
+
+		directory.entries.push(DirEntry::free(BLOCK_SIZE as u16 - len));
+
+		// do it again for the second block
+		let mut layout = vec![DirEntry::free(20), to_insert.clone(), to_insert.clone()];
+
+		let mut len = 0;
+		for e in &layout {
+			len += e.record_len;
+		}
+
+		directory.entries.append(&mut layout);
+		directory.entries.push(DirEntry::free(BLOCK_SIZE as u16 - len));
+
+		// final state
+		// . .. dummy dummy free(50) dummy free(*) | free(20) dummy dummy free(*)
+
+		directory_handler.write_directory_with_inode(&mut device, &directory, &inode)?;
+
+		// retrieve the entries
+		let res = directory_handler.get_entries(&mut device, &inode, true)?;
+		assert_eq!(res.len(), directory.entries.len());
+		for i in 0..res.len() {
+			assert_entry(&res[i], &directory.entries[i]);
+		}
+
+		return Ok(());
+	}
+
+
+
+	fn assert_entry(actual: &DirEntry, expected: &DirEntry) {
+		assert_eq!(actual.is_free(), expected.is_free());
+		assert_eq!(actual.record_len, expected.record_len);
+		if !actual.is_free() {
+			assert_eq!(actual.file_type, expected.file_type);
+			assert_eq!(actual.inode, expected.inode);
+			assert_eq!(actual.name_len, expected.name_len);
+		}
+	}
 }
+
 

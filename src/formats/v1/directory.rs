@@ -15,7 +15,7 @@ use std::io;
 // A free region has invalid inode index.
 
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone, Copy)]
 pub struct DirEntry {
 	pub inode: u32,
 	pub file_type: FileType,
@@ -175,74 +175,99 @@ impl Directory {
 
 
 
-#[test]
-fn dir_entry() -> io::Result<()> {
-	let mut buf = [0u8; BLOCK_SIZE];
 
-	// test free space
-	let entry = DirEntry::free(10);
-	assert_eq!(entry.record_len, 10);
-	assert!(entry.is_free());
+#[cfg(test)]
+mod tests {
+	use super::*;
 
-	entry.serialize(&mut buf, 20);
-	let deserialized = DirEntry::deserialize(&buf, 20);
-	assert_eq!(deserialized.record_len, 10);
-	assert!(deserialized.is_free());
+	#[test]
+	fn file_entry() -> io::Result<()> {
+		let mut buf = [0u8; BLOCK_SIZE];
 
-	// test an allocated entry
-	let entry = DirEntry::new(5, FileType::Directory, "name");
-	assert_eq!(entry.name_len, 4);
-	assert!(!entry.is_free());
-	assert_eq!(entry.inode, 5);
-	assert_eq!(entry.file_type, FileType::Directory);
-	assert_eq!(entry.record_len, DirEntry::min_record_len(entry.name_len));
+		// test an allocated entry
+		let entry = DirEntry::new(5, FileType::Directory, "name");
+		assert_eq!(entry.name_len, 4);
+		assert!(!entry.is_free());
+		assert_eq!(entry.inode, 5);
+		assert_eq!(entry.file_type, FileType::Directory);
+		assert_eq!(entry.record_len, DirEntry::min_record_len(entry.name_len));
 	
-	entry.serialize(&mut buf, 15);
-	let deserialized = DirEntry::deserialize(&buf, 15);
-	assert_eq!(deserialized.name_len, 4);
-	assert!(!deserialized.is_free());
-	assert_eq!(deserialized.inode, 5);
-	assert_eq!(deserialized.file_type, FileType::Directory);
-	assert_eq!(deserialized.record_len, DirEntry::min_record_len(deserialized.name_len));
+		entry.serialize(&mut buf, 15);
+		let deserialized = DirEntry::deserialize(&buf, 15);
+		assert_eq!(deserialized.name_len, 4);
+		assert!(!deserialized.is_free());
+		assert_eq!(deserialized.inode, 5);
+		assert_eq!(deserialized.file_type, FileType::Directory);
+		assert_eq!(deserialized.record_len, DirEntry::min_record_len(deserialized.name_len));
 
-	Ok(())
-}
-
-
-
-#[test]
-fn directory() -> io::Result<()> {
-	// create an empty directory
-	let dir = Directory::new(1, 2);
-
-	// check that it fills a block
-	let mut sum = 0;
-	for e in &dir.entries {
-		sum += e.record_len;
+		Ok(())
 	}
-	assert_eq!(sum, BLOCK_SIZE as u16);
 
-	// check that we have ., .. and empty
-	assert_eq!(dir.entries.len(), 3);
+	#[test]
+	fn free_entry() -> io::Result<()> {
+		let mut buf = [0u8; BLOCK_SIZE];
+
+		// test free space
+		let entry = DirEntry::free(10);
+		assert_eq!(entry.record_len, 10);
+		assert!(entry.is_free());
+
+		entry.serialize(&mut buf, 20);
+		let deserialized = DirEntry::deserialize(&buf, 20);
+		assert_eq!(deserialized.record_len, 10);
+		assert!(deserialized.is_free());
+
+
+		// test too small free space
+		let entry = DirEntry::free(DirEntry::min_free_size() - 1);
+		assert_eq!(entry.record_len, DirEntry::min_free_size());
+		assert!(entry.is_free());
+
+		entry.serialize(&mut buf, 20);
+		let deserialized = DirEntry::deserialize(&buf, 20);
+		assert_eq!(deserialized.record_len, DirEntry::min_free_size());
+		assert!(deserialized.is_free());
+
+		Ok(())
+	}
+
+
+
+	#[test]
+	fn directory() -> io::Result<()> {
+		// create an empty directory
+		let dir = Directory::new(1, 2);
+
+		// check that it fills a block
+		let mut sum = 0;
+		for e in &dir.entries {
+			sum += e.record_len;
+		}
+		assert_eq!(sum, BLOCK_SIZE as u16);
+
+		// check that we have ., .. and empty
+		assert_eq!(dir.entries.len(), 3);
 	
-	let this = &dir.entries[0];
-	assert_eq!(this.inode, 1);
-	assert_eq!(this.file_type, FileType::Directory);
-	assert_eq!(this.name_len, 1);
-	assert_eq!(this.name[0], b'.');
-	assert_eq!(this.record_len, DirEntry::min_record_len(1));
+		let this = &dir.entries[0];
+		assert_eq!(this.inode, 1);
+		assert_eq!(this.file_type, FileType::Directory);
+		assert_eq!(this.name_len, 1);
+		assert_eq!(this.name[0], b'.');
+		assert_eq!(this.record_len, DirEntry::min_record_len(1));
 
-	let parent = &dir.entries[1];
-	assert_eq!(parent.inode, 2);
-	assert_eq!(parent.file_type, FileType::Directory);
-	assert_eq!(parent.name_len, 2);
-	assert_eq!(parent.name[0], b'.');
-	assert_eq!(parent.name[1], b'.');
-	assert_eq!(parent.record_len, DirEntry::min_record_len(2));
+		let parent = &dir.entries[1];
+		assert_eq!(parent.inode, 2);
+		assert_eq!(parent.file_type, FileType::Directory);
+		assert_eq!(parent.name_len, 2);
+		assert_eq!(parent.name[0], b'.');
+		assert_eq!(parent.name[1], b'.');
+		assert_eq!(parent.record_len, DirEntry::min_record_len(2));
 
-	let empty = &dir.entries[2];
-	assert!(empty.is_free());
-	assert_eq!(empty.record_len, BLOCK_SIZE as u16 - this.record_len - parent.record_len);
+		let empty = &dir.entries[2];
+		assert!(empty.is_free());
+		assert_eq!(empty.record_len, BLOCK_SIZE as u16 - this.record_len - parent.record_len);
 
-	Ok(())
+		Ok(())
+	}
+
 }
