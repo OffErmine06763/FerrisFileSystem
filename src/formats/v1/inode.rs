@@ -45,13 +45,13 @@ impl INode {
 
 
 	pub fn serialize(&self, buf: &mut [u8; BLOCK_SIZE]) {
-		let mut offset = 0;
+		let mut _offset = 0;
 
 		macro_rules! write_field {
 			($value:expr) => {{
 				let bytes = $value.to_le_bytes();
-				buf[offset..offset + bytes.len()].copy_from_slice(&bytes);
-				offset += bytes.len();
+				buf[_offset.._offset + bytes.len()].copy_from_slice(&bytes);
+				_offset += bytes.len();
 			}};
 		}
 
@@ -79,17 +79,17 @@ impl INode {
 	}
 
 	pub fn deserialize(buf: &[u8]) -> Self {
-		let mut offset = 0;
+		let mut _offset = 0;
 
 		macro_rules! read_field {
 			($ty:ty) => {{
 				let size = core::mem::size_of::<$ty>();
 				let value = <$ty>::from_le_bytes(
-					buf[offset..offset + size]
+					buf[_offset.._offset + size]
 						.try_into()
 						.expect("buffer too small"),
 				);
-				offset += size;
+				_offset += size;
 				value
 			}};
 		}

@@ -38,13 +38,7 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 	fn create_symlink(&mut self, device: &mut D, path: &str, path_tgt: &str) -> FSResult<()> {
 		let (mut inode, index) = self.create(device, path, FileType::Symlink)?;
 		
-		let data_block = self.superblock.data_start + inode.direct[0];
-		let mut buf = [0u8; BLOCK_SIZE];
-		buf[0..path_tgt.len()].copy_from_slice(path_tgt.as_bytes());
-		device.write_block(data_block, &buf)?;
-
-		inode.size = path_tgt.len() as u64;
-		self.inode_handler.write_inode(device, index, &inode)?;
+		self.write_symlink(device, &mut inode, index, path_tgt)?;
 
 		#[cfg(debug_assertions)]
 		{
@@ -58,6 +52,126 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 		self.create(device, path, FileType::File)?;
 		Ok(())
 	}
+	fn create_hardlink(&mut self, device: &mut D, src: &str, dst: &str) -> FSResult<()> {
+		// FIND SOURCE
+		let src_path = Path::new(src);
+
+		let source_resolve = self.directory_handler.resolve(device, src_path, self.superblock.root_inode, &self.inode_handler, true)?;
+		let src_parent_inode_ind = source_resolve.parent_inode_index;
+		let mut inode = source_resolve.target_inode;
+		let inode_ind = source_resolve.target_inode_index;
+		let src_entry_block_ind = source_resolve.dir_entry_block_index;
+		let src_entry_offset = source_resolve.dir_entry_offset;
+
+		if inode.file_type != FileType::File {
+			return Err(FSError::NotAFile{ path: src.to_string() });
+		}
+
+		// FIND DESTINATION PARENT DIRECTORY
+		let dst_path = Path::new(dst);
+		let dst_parent = dst_path.parent().unwrap(); // TODO: handle ill formatted paths
+		let dst_filename = dst_path.file_name().unwrap().to_str().unwrap();
+
+		let destination_resolve = self.directory_handler.resolve(device, dst_parent, self.superblock.root_inode, &self.inode_handler, true)?;
+		let dst_parent_inode_ind = destination_resolve.target_inode_index;
+		let mut dst_parent_inode = destination_resolve.target_inode;
+
+
+		// CREATE NEW ENTRY AND CHECK NAME COLLISION
+		let mut dst_entry = DirEntry::new(inode_ind, FileType::File, dst_filename);
+		let exists = self.directory_handler.find_entry(device, &dst_parent_inode, &dst_entry.name.as_slice())?;
+		if exists.is_some() {
+			return Err(FSError::AlreadyExists{ path: dst.to_string() });
+		}
+
+
+		// ALLOCATE BLOCKS
+		let fit_result = self.directory_handler.can_fit(device, &dst_parent_inode, &dst_entry)?;
+		let data_to_alloc = if fit_result != None { 0 } else { 1 };
+		let (_, allocated_data) = self.allocate(device, 0, data_to_alloc)?;
+
+		
+		// WRITE DIRECTORY ENTRY
+		let dst_entry_block;
+		let dst_entry_offset;
+
+		if fit_result == None {
+			dst_entry_block = allocated_data[1];
+			dst_entry_offset = 0;
+
+			dst_parent_inode.size += BLOCK_SIZE as u64;
+			dst_parent_inode.add_block(dst_entry_block);
+			self.directory_handler.add_entry_grow(device, &dst_parent_inode, &mut dst_entry, dst_entry_block)?;
+		}
+		else {
+			(dst_entry_block, dst_entry_offset) = fit_result.unwrap();
+			self.directory_handler.add_entry_here(device, &dst_parent_inode, &mut dst_entry, dst_entry_block, dst_entry_offset)?;
+		}
+
+
+		// UPDATE INODE
+		inode.links += 1;
+		self.inode_handler.write_inode(device, inode_ind, &inode)?;
+
+
+		// UPDATE PARENT INODE
+		let now: u64 = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+		dst_parent_inode.modified = now;
+		self.inode_handler.write_inode(device, dst_parent_inode_ind, &dst_parent_inode)?;
+
+
+		#[cfg(debug_assertions)]
+		{
+			println!("Created hard link from '{}' to '{}'", src, dst);
+			println!();
+
+			println!("{:<20} {:>12} {:>10} {:>12}", "", "Index/Offset", "Block", "Address");
+			println!("{}", "-".repeat(58));
+
+			let inode_block = self.superblock.inode_table_start + inode_ind / INode::inodes_per_block();
+			let inode_addr = inode_block as u64 * BLOCK_SIZE as u64 + inode_ind as u64 % INode::inodes_per_block() as u64 * INode::on_disk_size() as u64;
+			println!("{:<20} {:>12} {:>10}   0x{:08X}",
+				"INode", inode_ind, inode_block, inode_addr,
+			);
+
+			{ 
+				let dir_inode_block = self.superblock.inode_table_start + src_parent_inode_ind / INode::inodes_per_block();
+				let dir_inode_addr = dir_inode_block as u64 * BLOCK_SIZE as u64 + src_parent_inode_ind as u64 % INode::inodes_per_block() as u64 * INode::on_disk_size() as u64;
+				println!("{:<20} {:>12} {:>10}   0x{:08X}",
+					"Src Parent INode", src_parent_inode_ind, dir_inode_block, dir_inode_addr,
+				);
+
+				let entry_block = self.superblock.data_start + src_entry_block_ind;
+				println!("{:<20} {:>12} {:>10}   0x{:08X}",
+					"Src Parent Entry", src_entry_offset, entry_block, entry_block as u64 * BLOCK_SIZE as u64 + src_entry_offset as u64,
+				);
+			}
+
+			{
+				let dir_inode_block = self.superblock.inode_table_start + dst_parent_inode_ind / INode::inodes_per_block();
+				let dir_inode_addr = dir_inode_block as u64 * BLOCK_SIZE as u64 + dst_parent_inode_ind as u64 % INode::inodes_per_block() as u64 * INode::on_disk_size() as u64;
+				println!("{:<20} {:>12} {:>10}   0x{:08X}",
+					"Dst Parent INode", dst_parent_inode_ind, dir_inode_block, dir_inode_addr,
+				);
+
+				let entry_block = self.superblock.data_start + dst_entry_block;
+				print!("{:<20} {:>12} {:>10}   0x{:08X}",
+					"Dst Parent Entry", dst_entry_offset, entry_block, entry_block as u64 * BLOCK_SIZE as u64 + dst_entry_offset as u64,
+				);
+				if fit_result == None { println!("New Block"); }
+				else                  { println!(); }
+			}
+
+			println!();
+			dst_entry.print();
+
+			println!();
+		}
+
+
+		Ok(())
+	}
+
 
 
 	fn delete(&mut self, device: &mut D, path_str: &str) -> FSResult<()> {
@@ -220,126 +334,6 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 		Ok(())
 	}
 
-
-	fn link(&mut self, device: &mut D, src: &str, dst: &str) -> FSResult<()> {
-		// FIND SOURCE
-		let src_path = Path::new(src);
-
-		let source_resolve = self.directory_handler.resolve(device, src_path, self.superblock.root_inode, &self.inode_handler, true)?;
-		let src_parent_inode_ind = source_resolve.parent_inode_index;
-		let mut inode = source_resolve.target_inode;
-		let inode_ind = source_resolve.target_inode_index;
-		let src_entry_block_ind = source_resolve.dir_entry_block_index;
-		let src_entry_offset = source_resolve.dir_entry_offset;
-
-		if inode.file_type != FileType::File {
-			return Err(FSError::NotAFile{ path: src.to_string() });
-		}
-
-		// FIND DESTINATION PARENT DIRECTORY
-		let dst_path = Path::new(dst);
-		let dst_parent = dst_path.parent().unwrap(); // TODO: handle ill formatted paths
-		let dst_filename = dst_path.file_name().unwrap().to_str().unwrap();
-
-		let destination_resolve = self.directory_handler.resolve(device, dst_parent, self.superblock.root_inode, &self.inode_handler, true)?;
-		let dst_parent_inode_ind = destination_resolve.target_inode_index;
-		let mut dst_parent_inode = destination_resolve.target_inode;
-
-
-		// CREATE NEW ENTRY AND CHECK NAME COLLISION
-		let mut dst_entry = DirEntry::new(inode_ind, FileType::File, dst_filename);
-		let exists = self.directory_handler.find_entry(device, &dst_parent_inode, &dst_entry.name.as_slice())?;
-		if exists.is_some() {
-			return Err(FSError::AlreadyExists{ path: dst.to_string() });
-		}
-
-
-		// ALLOCATE BLOCKS
-		let fit_result = self.directory_handler.can_fit(device, &dst_parent_inode, &dst_entry)?;
-		let data_to_alloc = if fit_result != None { 0 } else { 1 };
-		let (_, allocated_data) = self.allocate(device, 0, data_to_alloc)?;
-
-		
-		// WRITE DIRECTORY ENTRY
-		let dst_entry_block;
-		let dst_entry_offset;
-
-		if fit_result == None {
-			dst_entry_block = allocated_data[1];
-			dst_entry_offset = 0;
-
-			dst_parent_inode.size += BLOCK_SIZE as u64;
-			dst_parent_inode.add_block(dst_entry_block);
-			self.directory_handler.add_entry_grow(device, &dst_parent_inode, &mut dst_entry, dst_entry_block)?;
-		}
-		else {
-			(dst_entry_block, dst_entry_offset) = fit_result.unwrap();
-			self.directory_handler.add_entry_here(device, &dst_parent_inode, &mut dst_entry, dst_entry_block, dst_entry_offset)?;
-		}
-
-
-		// UPDATE INODE
-		inode.links += 1;
-		self.inode_handler.write_inode(device, inode_ind, &inode)?;
-
-
-		// UPDATE PARENT INODE
-		let now: u64 = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-		dst_parent_inode.modified = now;
-		self.inode_handler.write_inode(device, dst_parent_inode_ind, &dst_parent_inode)?;
-
-
-		#[cfg(debug_assertions)]
-		{
-			println!("Linked file from '{}' to '{}'", src, dst);
-			println!();
-
-			println!("{:<20} {:>12} {:>10} {:>12}", "", "Index/Offset", "Block", "Address");
-			println!("{}", "-".repeat(58));
-
-			let inode_block = self.superblock.inode_table_start + inode_ind / INode::inodes_per_block();
-			let inode_addr = inode_block as u64 * BLOCK_SIZE as u64 + inode_ind as u64 % INode::inodes_per_block() as u64 * INode::on_disk_size() as u64;
-			println!("{:<20} {:>12} {:>10}   0x{:08X}",
-				"INode", inode_ind, inode_block, inode_addr,
-			);
-
-			{ 
-				let dir_inode_block = self.superblock.inode_table_start + src_parent_inode_ind / INode::inodes_per_block();
-				let dir_inode_addr = dir_inode_block as u64 * BLOCK_SIZE as u64 + src_parent_inode_ind as u64 % INode::inodes_per_block() as u64 * INode::on_disk_size() as u64;
-				println!("{:<20} {:>12} {:>10}   0x{:08X}",
-					"Src Parent INode", src_parent_inode_ind, dir_inode_block, dir_inode_addr,
-				);
-
-				let entry_block = self.superblock.data_start + src_entry_block_ind;
-				println!("{:<20} {:>12} {:>10}   0x{:08X}",
-					"Src Parent Entry", src_entry_offset, entry_block, entry_block as u64 * BLOCK_SIZE as u64 + src_entry_offset as u64,
-				);
-			}
-
-			{
-				let dir_inode_block = self.superblock.inode_table_start + dst_parent_inode_ind / INode::inodes_per_block();
-				let dir_inode_addr = dir_inode_block as u64 * BLOCK_SIZE as u64 + dst_parent_inode_ind as u64 % INode::inodes_per_block() as u64 * INode::on_disk_size() as u64;
-				println!("{:<20} {:>12} {:>10}   0x{:08X}",
-					"Dst Parent INode", dst_parent_inode_ind, dir_inode_block, dir_inode_addr,
-				);
-
-				let entry_block = self.superblock.data_start + dst_entry_block;
-				print!("{:<20} {:>12} {:>10}   0x{:08X}",
-					"Dst Parent Entry", dst_entry_offset, entry_block, entry_block as u64 * BLOCK_SIZE as u64 + dst_entry_offset as u64,
-				);
-				if fit_result == None { println!("New Block"); }
-				else                  { println!(); }
-			}
-
-			println!();
-			dst_entry.print();
-
-			println!();
-		}
-
-
-		Ok(())
-	}
 
 
 	fn file_exists(&mut self, device: &mut D, path_str: &str) -> FSResult<(bool, Option<FileType>)> {
@@ -564,6 +558,47 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 		}
 
 		Ok(metadata.offset)
+	}
+	fn truncate(&mut self, device: &mut D, file: &File, size: u64) -> FSResult<()> {
+		//! reduces the size of the file. if the file is smaller, nothing happens
+
+		if !self.open_files.contains_key(&file.id) {
+			return Err(FSError::FileNotOpen{ file_id: file.id });
+		}
+
+		let metadata = self.open_files.get_mut(&file.id).unwrap();
+		let mut inode = self.inode_handler.read_inode(device, metadata.inode)?;
+		if size < inode.size {
+			inode.size = size;
+			self.inode_handler.write_inode(device, metadata.inode, &inode)?;
+		}
+
+		Ok(())
+	}
+
+
+	fn edit_symlink(&mut self, device: &mut D, path_str: &str, path_tgt: &str) -> FSResult<()> {
+		// FIND SYMLINK
+		let path = Path::new(path_str);
+
+		let resolve_result = self.directory_handler.resolve(device, path, self.superblock.root_inode, &self.inode_handler, false)?;
+		let mut inode = resolve_result.target_inode;
+		let index = resolve_result.target_inode_index;
+
+		if inode.file_type != FileType::Symlink {
+			return Err(FSError::NotASymlink{ path: path_str.to_string() });
+		}
+
+		// WRITE NEW CONTENTS
+		self.write_symlink(device, &mut inode, index, path_tgt)?;
+
+		#[cfg(debug_assertions)]
+		{
+			println!("Symlink '{}' re-linked to '{}'", path_str, path_tgt);
+			println!();
+		}
+
+		Ok(())
 	}
 
 
@@ -851,6 +886,22 @@ impl FormatV1 {
 		device.write_block(0, &buf)?;
 
 		Ok((inode_inds, data_inds))
+	}
+
+
+
+	fn write_symlink<D: BlockDevice>(&mut self, device: &mut D, inode: &mut INode, index: u32, path_tgt: &str) -> FSResult<()> {
+		//! overwrites the contents of the symlink, without zeroing the old content.
+		//! note: assumes the inode to be of a symlink
+		let data_block = self.superblock.data_start + inode.direct[0];
+		let mut buf = [0u8; BLOCK_SIZE];
+		buf[0..path_tgt.len()].copy_from_slice(path_tgt.as_bytes());
+		device.write_block(data_block, &buf)?;
+
+		inode.size = path_tgt.len() as u64;
+		self.inode_handler.write_inode(device, index, &inode)?;
+
+		Ok(())
 	}
 
 
@@ -1662,7 +1713,6 @@ mod tests {
 		Ok(())
 	}
 
-
 	#[test]
 	fn invalid_symlink() -> FSResult<()> {
 		// initialization
@@ -1689,6 +1739,39 @@ mod tests {
 
 		Ok(())
 	}
+
+	#[test]
+	fn symlink_editing() -> FSResult<()> {
+		// initialization
+		let size = 20;
+		let mut device = MemoryDevice::empty(size);
+		FormatV1::format(&mut device)?;
+
+		let mut ffs = FormatV1::mount(&mut device)?;
+
+		{
+			let filename = "file";
+			let wrong_filename = "wrong";
+			let symname = "sym";
+
+			// create files
+			create_file(&mut device, &mut ffs, filename)?;
+			create_symlink(&mut device, &mut ffs, symname, wrong_filename)?;
+
+			// edit the symlink
+			ffs.edit_symlink(&mut device, symname, filename)?;
+
+			// I/O
+			test_symlink_io(&mut device, &mut ffs, filename, symname)?;
+
+			// deletion
+			delete_file(&mut device, &mut ffs, filename)?;
+			delete_symlink(&mut device, &mut ffs, symname)?;
+		}
+		
+		Ok(())
+	}
+
 
 	// ERRORS
 	#[test]

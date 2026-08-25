@@ -50,10 +50,10 @@ pub trait FsFormat<D: BlockDevice> {
 	fn create_file(&mut self, device: &mut D, path: &str) -> FSResult<()>;
 	fn create_directory(&mut self, device: &mut D, path: &str) -> FSResult<()>;
 	fn create_symlink(&mut self, device: &mut D, path: &str, path_tgt: &str) -> FSResult<()>;
+	fn create_hardlink(&mut self, device: &mut D, from: &str, to: &str) -> FSResult<()>;
 
 	fn delete(&mut self, device: &mut D, path: &str) -> FSResult<()>;
 	
-	fn link(&mut self, device: &mut D, from: &str, to: &str) -> FSResult<()>;
 
 	fn file_exists(&mut self, device: &mut D, path: &str) -> FSResult<(bool, Option<FileType>)>;
 	fn open_file(&mut self, device: &mut D, path: &str) -> FSResult<File>;
@@ -62,6 +62,9 @@ pub trait FsFormat<D: BlockDevice> {
 	fn read(&mut self, device: &mut D, file: &File, buf: &mut [u8]) -> FSResult<usize>;
 	fn write(&mut self, device: &mut D, file: &File, buf: &[u8]) -> FSResult<usize>;
 	fn seek(&mut self, device: &mut D, file: &File, pos: SeekFrom) -> FSResult<u64>;
+	fn truncate(&mut self, device: &mut D, file: &File, size: u64) -> FSResult<()>;
+
+	fn edit_symlink(&mut self, device: &mut D, path: &str, path_tgt: &str) -> FSResult<()>;
 
 	fn get_directory_content(&mut self, device: &mut D, path: &str) -> FSResult<DirectoryContentResult>;
 	

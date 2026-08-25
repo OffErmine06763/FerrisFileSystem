@@ -34,7 +34,7 @@ fn main() -> FSResult<()> {
 	ffs.create_file("name.txt")?;
 	ffs.create_directory("fold")?;
 	ffs.create_file("fold/inner.txt")?;
-	ffs.link("name.txt", "fold/name_inner.txt")?;
+	ffs.create_hardlink("name.txt", "fold/name_inner.txt")?;
 
 	
 	print_dir("./fold", &mut ffs)?;

@@ -27,27 +27,29 @@ pub enum FSErrorCode {
 	NotADirectory		  = Self::generic(6),
 	IsAFile				  = Self::generic(7),
 	NotAFile			  = Self::generic(8),
+	IsASymlink			  = Self::generic(9),
+	NotASymlink			  = Self::generic(10),
 
-	DirectoryNotEmpty = Self::generic(9),
-	FileNotOpen       = Self::generic(10),
+	DirectoryNotEmpty = Self::generic(11),
+	FileNotOpen       = Self::generic(12),
 
-	DirFreeRegionTooSmall = Self::generic(11),
-	DirEntryNotFree		  = Self::generic(12),
+	DirFreeRegionTooSmall = Self::generic(13),
+	DirEntryNotFree		  = Self::generic(14),
 
-	StorageFull	   = Self::generic(13),
-	INodeTableFull = Self::generic(14),
-	DataRegionFull = Self::generic(15),
+	StorageFull	   = Self::generic(15),
+	INodeTableFull = Self::generic(16),
+	DataRegionFull = Self::generic(17),
 	
-	InvalidInput				  = Self::generic(16),
-	InputDirEntriesOverfillBlock  = Self::generic(17),
-	InputDirEntriesUnderfillBlock = Self::generic(18),
-	InputOffsetNotAtDirEntryStart = Self::generic(19),
-	InputINodeIndexOOB			  = Self::generic(20),
-	InputBlockIndexOOB			  = Self::generic(21),
-	InputUnknownFileType		  = Self::generic(22),
+	InvalidInput				  = Self::generic(18),
+	InputDirEntriesOverfillBlock  = Self::generic(19),
+	InputDirEntriesUnderfillBlock = Self::generic(20),
+	InputOffsetNotAtDirEntryStart = Self::generic(21),
+	InputINodeIndexOOB			  = Self::generic(22),
+	InputBlockIndexOOB			  = Self::generic(23),
+	InputUnknownFileType		  = Self::generic(24),
 
-	EmptySymlink = Self::generic(23),
-	MaximumSymlinkDepthReached = Self::generic(24),
+	EmptySymlink               = Self::generic(25),
+	MaximumSymlinkDepthReached = Self::generic(26),
 
 	InvalidDirEntry         = Self::corruption(1),
 	ZeroLengthDirEntry      = Self::corruption(2),
@@ -164,6 +166,12 @@ pub enum FSError {
 	NotAFile {
 		path: String,
 	},
+	IsASymlink {
+		path: String,
+	},
+	NotASymlink {
+		path: String,
+	},
 
 	DirectoryNotEmpty,
 	FileNotOpen {
@@ -207,6 +215,8 @@ impl FSError {
 			Self::NotADirectory { .. } => FSErrorCode::NotADirectory,
 			Self::IsAFile       { .. } => FSErrorCode::IsAFile,
 			Self::NotAFile      { .. } => FSErrorCode::NotAFile,
+			Self::IsASymlink    { .. } => FSErrorCode::IsASymlink,
+			Self::NotASymlink   { .. } => FSErrorCode::NotASymlink,
 
 			Self::DirectoryNotEmpty { .. } => FSErrorCode::DirectoryNotEmpty,
 			Self::FileNotOpen		{ .. } => FSErrorCode::FileNotOpen,

@@ -39,13 +39,12 @@ impl<D: BlockDevice> FFS<D> {
 	pub fn create_symlink(&mut self, path: &str, tgt: &str) -> FSResult<()> {
 		self.format.create_symlink(&mut self.device, path, tgt)
 	}
+	pub fn create_hardlink(&mut self, src: &str, dst: &str) -> FSResult<()> {
+		self.format.create_hardlink(&mut self.device, src, dst)
+	}
 
 	pub fn delete(&mut self, path: &str) -> FSResult<()> {
 		self.format.delete(&mut self.device, path)
-	}
-
-	pub fn link(&mut self, src: &str, dst: &str) -> FSResult<()> {
-		self.format.link(&mut self.device, src, dst)
 	}
 
 	pub fn file_exists(&mut self, path: &str) -> FSResult<(bool, Option<FileType>)> {
