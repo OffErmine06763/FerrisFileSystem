@@ -67,6 +67,7 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 			return Err(FSError::NotAFile{ path: src.to_string() });
 		}
 
+
 		// FIND DESTINATION PARENT DIRECTORY
 		let dst_path = Path::new(dst);
 		let dst_parent = dst_path.parent().unwrap(); // TODO: handle ill formatted paths
@@ -79,15 +80,22 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 
 		// CREATE NEW ENTRY AND CHECK NAME COLLISION
 		let mut dst_entry = DirEntry::new(inode_ind, FileType::File, dst_filename);
-		let exists = self.directory_handler.find_entry(device, &dst_parent_inode, &dst_entry.name.as_slice())?;
+		let exists = self.directory_handler.find_entry(device, &dst_parent_inode, &self.inode_handler, &dst_entry.name.as_slice())?;
 		if exists.is_some() {
 			return Err(FSError::AlreadyExists{ path: dst.to_string() });
 		}
 
 
 		// ALLOCATE BLOCKS
-		let fit_result = self.directory_handler.can_fit(device, &dst_parent_inode, &dst_entry)?;
-		let data_to_alloc = if fit_result != None { 0 } else { 1 };
+		let fit_result = self.directory_handler.can_fit(device, &dst_parent_inode, &self.inode_handler, &dst_entry)?;
+		let data_to_alloc;
+		if fit_result != None { 
+			data_to_alloc = 0;
+		} else {
+			// allocate the block for the new entry and the blocks necessary for the directory inode indirect/double indirect
+			let count = self.inode_handler.blocks_necessary_to_grow(&dst_parent_inode);
+			data_to_alloc = 1 + count;
+		};
 		let (_, allocated_data) = self.allocate(device, 0, data_to_alloc)?;
 
 		
@@ -96,12 +104,18 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 		let dst_entry_offset;
 
 		if fit_result == None {
-			dst_entry_block = allocated_data[1];
+			dst_entry_block = allocated_data[0];
 			dst_entry_offset = 0;
 
-			dst_parent_inode.size += BLOCK_SIZE as u64;
-			dst_parent_inode.add_block(dst_entry_block);
+			let count = self.inode_handler.blocks_necessary_to_grow(&dst_parent_inode);
+			let mut pool = Vec::<u32>::new();
+			for i in 0..count as usize {
+				pool.push(allocated_data[1 + i]);
+			}
+			self.inode_handler.add_block(device, &mut dst_parent_inode, dst_entry_block, &pool)?;
+
 			self.directory_handler.add_entry_grow(device, &dst_parent_inode, &mut dst_entry, dst_entry_block)?;
+			dst_parent_inode.size += BLOCK_SIZE as u64;
 		}
 		else {
 			(dst_entry_block, dst_entry_offset) = fit_result.unwrap();
@@ -185,26 +199,29 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 		//! throws: DoesNotExist, DirectoryNotEmpty, InvalidDirEntry(InvalidFileType, InvalidINode)
 
 		// TODO: handle failures of intermediate operations.
-		// TODO: prevent deletion of . or .. of root
 
 		let path = Path::new(path_str);
 
 		// FIND FILE TO DELETE
 		let resolution_result = self.directory_handler.resolve(device, path, self.superblock.root_inode, &self.inode_handler, false)?;
+		let file_inode_ind = resolution_result.target_inode_index;
+		if file_inode_ind == self.superblock.root_inode {
+			return Err(FSError::DeletingRoot);
+		}
+
+		let mut file_inode = resolution_result.target_inode;
 		let parent_inode_ind = resolution_result.parent_inode_index;
 		let mut parent_inode = self.inode_handler.read_inode(device, parent_inode_ind)?;
-		let mut file_inode = resolution_result.target_inode;
 		let file_type = file_inode.file_type;
-		let file_inode_ind = resolution_result.target_inode_index;
 		let entry_offset = resolution_result.dir_entry_offset;
 		let entry_block_ind = resolution_result.dir_entry_block_index;
 
 
+		// when deleting a directory it must be empty
 		if file_type == FileType::Directory {
-			// the directory must be empty
 			let mut empty = true;
 
-			self.directory_handler.iterate(device, &file_inode, |entry: DirEntry, _block: u32, _offset: usize| -> bool {
+			self.directory_handler.iterate(device, &file_inode, &self.inode_handler, |entry: DirEntry, _block: u32, _offset: usize| -> bool {
 				if entry.is_free() { return false; }
 				
 				if (entry.name_len > 2) || (entry.name[0] != b'.') || (entry.name_len == 2 && entry.name[1] != b'.')
@@ -236,10 +253,10 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 			let mut data_to_dealloc = Vec::<u32>::new();
 			let mut inodes_to_dealloc = Vec::<u32>::new();
 
-			// TODO: support large files
 			data_to_dealloc.reserve(file_inode.blocks as usize);
-			for block in 0..file_inode.blocks {
-				data_to_dealloc.push(file_inode.direct[block as usize]);
+			for i in 0..file_inode.blocks {
+				let block = self.inode_handler.get_block(device, &file_inode, i)?;
+				data_to_dealloc.push(block);
 			}
 
 			inodes_to_dealloc.push(file_inode_ind);
@@ -294,11 +311,23 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 				println!("{:<20} {:>12} {:>10} {:>12}", "", "Index/Offset", "Block", "Address");
 				println!("{}", "-".repeat(58));
 				println!("Data Blocks Deleted:");
-				for block in 0..file_inode.blocks {
+				for block in 0..file_inode.blocks.min(INode::DIRECT_COUNT as u32) {
 					let index = file_inode.direct[block as usize];
 					let block = self.superblock.data_start + index;
 					let addr = block as u64 * BLOCK_SIZE as u64;
 					println!("                     {:>12} {:>10}   0x{:08X}", index, block, addr);
+				}
+				if file_inode.blocks > INode::DIRECT_COUNT as u32 {
+					let index = file_inode.indirect;
+					let block = self.superblock.data_start + index;
+					let addr = block as u64 * BLOCK_SIZE as u64;
+					println!("    Indirect         {:>12} {:>10}   0x{:08X}", index, block, addr);
+				}
+				if file_inode.blocks > INode::DIRECT_COUNT as u32 + INode::INDIRECT_COUNT as u32 {
+					let index = file_inode.double;
+					let block = self.superblock.data_start + index;
+					let addr = block as u64 * BLOCK_SIZE as u64;
+					println!("    Double           {:>12} {:>10}   0x{:08X}", index, block, addr);
 				}
 
 				let block = self.superblock.inode_table_start + file_inode_ind / INode::inodes_per_block();
@@ -402,12 +431,9 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 		let mut device_buf = [0u8; BLOCK_SIZE];
 
 		while read < buf.len() && metadata.offset < inode.size {
-			if block >= 12 {
-				todo!() // support indirect
-			}
+			let block_ind = self.inode_handler.get_block(device, &inode, block)?;
 
 			// check that the address is acceptable
-			let block_ind = inode.direct[block as usize];
 			if block_ind == INVALID_ADDRESS {
 				return Err(FSError::InvalidINode(InvalidINodeKind::InvalidDirect{ ind: block as u16 }));
 			} else if block_ind > self.block_allocator.max_index() {
@@ -462,36 +488,42 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 		if final_block >= inode.blocks {
 			allocated = true;
 
-			if final_block >= 12 {
-				todo!() // support indirect
-			}
-
-			let to_alloc = final_block - inode.blocks + 1;
+			let to_alloc_data = final_block - inode.blocks + 1;
+			let to_alloc_inode_metadata = self.inode_handler.blocks_necessary_to_grow_n(&inode, to_alloc_data);
 			
-			let data_inds: Vec<u32> = self.block_allocator.find_free(device, to_alloc as u32)?;
+			// allocate metadata
+			let metadata_inds: Vec<u32> = self.block_allocator.find_free(device, to_alloc_inode_metadata as u32)?;
+			if metadata_inds.len() < to_alloc_inode_metadata as usize {
+				return Err(FSError::StorageFull(StorageFullKind::DataRegionFull));
+			}
+			self.block_allocator.allocate(device, &metadata_inds)?;
+			
+			// allocate data, for now assume that no operation can fail
+			let data_inds: Vec<u32> = self.block_allocator.find_free(device, to_alloc_data as u32)?;
+			if data_inds.is_empty() {
+				// return only if empty, we still want to write all we can
+				self.block_allocator.deallocate(device, &metadata_inds)?;
+				return Err(FSError::StorageFull(StorageFullKind::DataRegionFull));
+			}
 			self.block_allocator.allocate(device, &data_inds)?;
 
-			inode.direct[inode.blocks as usize..(inode.blocks as usize + data_inds.len())].copy_from_slice(data_inds.as_slice());
-			
 			// zero all new blocks, since any write could fail
 			for i in &data_inds {
 				let block_address = self.superblock.data_start + i;
 				device.write_block(block_address, &device_buf)?;
 			}
 
+			// add the data blocks to the inode
+			self.inode_handler.add_blocks(device, &mut inode, &data_inds, &metadata_inds)?;
+
 			// this might have allocated less than to_alloc, we still want to write all we can
-			inode.blocks += data_inds.len() as u32;
-			self.superblock.free_data -= data_inds.len() as u32;
+			self.superblock.free_data -= data_inds.len() as u32 + to_alloc_inode_metadata;
 		}
 
 
 		while wrote < buf.len() && block < inode.blocks {
-			if block >= 12 {
-				todo!() // support indirect
-			}
-
 			// check that the address is acceptable
-			let block_ind = inode.direct[block as usize];
+			let block_ind = self.inode_handler.get_block(device, &inode, block)?;
 			if block_ind == INVALID_ADDRESS {
 				return Err(FSError::InvalidINode(InvalidINodeKind::InvalidDirect{ ind: block as u16 }));
 			} else if block_ind > self.block_allocator.max_index() {
@@ -729,7 +761,7 @@ impl FormatV1 {
 		
 		// CREATE NEW ENTRY AND CHECK NAME COLLISION
 		let mut entry = DirEntry::new(INVALID_ADDRESS, file_type.clone(), filename);
-		let exists = self.directory_handler.find_entry(device, &parent_inode, &entry.name.as_slice())?;
+		let exists = self.directory_handler.find_entry(device, &parent_inode, &self.inode_handler, &entry.name.as_slice())?;
 		if exists.is_some() {
 			return Err(FSError::AlreadyExists{ path: path_str.to_string() });
 		}
@@ -743,19 +775,28 @@ impl FormatV1 {
 			FileType::Symlink   => 1,
 			FileType::Unknown   => panic!(),
 		};
-		let fit_result = self.directory_handler.can_fit(device, &parent_inode, &entry)?;
-		let data_to_alloc = file_blocks + if fit_result != None { 0 } else { 1 };
+		let fit_result = self.directory_handler.can_fit(device, &parent_inode, &self.inode_handler, &entry)?;
+		let data_to_alloc;
+		if fit_result != None {
+			data_to_alloc = file_blocks;
+		} else {
+			let count = self.inode_handler.blocks_necessary_to_grow(&parent_inode);
+			data_to_alloc = file_blocks + 1 + count;
+		}
 		let (allocated_inodes, allocated_data) = self.allocate(device, inodes_to_alloc, data_to_alloc)?;
 
 		let inode_index = allocated_inodes[0];
+		let mut alloc_data_index = 0;
 		
+
 		// CREATE INODE
 		let now: u64 = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
 		let mut inode = INode::empty(file_type, u16::MAX, now);
 		entry.inode = inode_index;
 
 		if file_type == FileType::Directory || file_type == FileType::Symlink {
-			inode.add_block(allocated_data[0]);
+			self.inode_handler.add_block(device, &mut inode, allocated_data[alloc_data_index], &vec![])?;
+			alloc_data_index += 1;
 		}
 		inode.size = match file_type {
 			FileType::Directory => BLOCK_SIZE as u64 * inode.blocks as u64,
@@ -769,7 +810,7 @@ impl FormatV1 {
 		self.inode_handler.write_inode(device, inode_index, &inode)?;
 		if file_type == FileType::Directory {
 			let new_dir = Directory::new(inode_index, parent_inode_ind);
-			self.directory_handler.write_directory_with_inode(device, &new_dir, &inode)?;
+			self.directory_handler.write_directory_with_inode(device, &new_dir, &inode, &self.inode_handler)?;
 		}
 
 
@@ -778,12 +819,20 @@ impl FormatV1 {
 		let entry_offset;
 
 		if fit_result == None {
-			entry_block = allocated_data[1];
+			entry_block = allocated_data[alloc_data_index];
+			alloc_data_index += 1;
 			entry_offset = 0;
 
-			parent_inode.size += BLOCK_SIZE as u64;
-			parent_inode.add_block(entry_block);
+			let count = self.inode_handler.blocks_necessary_to_grow(&parent_inode);
+			let mut pool = Vec::<u32>::new();
+			for _ in 0..count as usize {
+				pool.push(allocated_data[alloc_data_index]);
+				alloc_data_index += 1;
+			}
+			self.inode_handler.add_block(device, &mut parent_inode, entry_block, &pool)?;
+
 			self.directory_handler.add_entry_grow(device, &parent_inode, &mut entry, entry_block)?;
+			parent_inode.size += BLOCK_SIZE as u64;
 		}
 		else {
 			(entry_block, entry_offset) = fit_result.unwrap();
@@ -931,7 +980,7 @@ impl FormatV1 {
 			return Err(FSError::NotADirectory{ path: path_str.to_string() });
 		}
 
-		let entries = self.directory_handler.get_entries(device, &dir_inode, include_free)?;
+		let entries = self.directory_handler.get_entries(device, &dir_inode, &self.inode_handler, include_free)?;
 
 		Ok(Directory { inode: dir_inode_ind, entries })
 	}
@@ -951,7 +1000,7 @@ impl FormatV1 {
 		// NOTE: the bitmaps might contain more bits than the blocks available
 		let inode_allocator   = BitmapAllocator::new(superblock.inode_bitmap_start, superblock.inode_bitmap_blocks, superblock.inode_table_blocks * INode::inodes_per_block());
 		let block_allocator   = BitmapAllocator::new(superblock.block_bitmap_start, superblock.block_bitmap_blocks, data_blocks);
-		let inode_handler     = INodeTableHandler::new(superblock.inode_table_start, superblock.inode_table_blocks);
+		let inode_handler     = INodeTableHandler::new(superblock.inode_table_start, superblock.inode_table_blocks, superblock.data_start);
 		let directory_handler = DirectoryHandler::new(superblock.data_start, superblock.root_inode);
 
 		// TODO: validate superblock
@@ -993,11 +1042,11 @@ impl FormatV1 {
 
 		// CREATE ROOT NODE
 
-		let inode_handler = INodeTableHandler::new(superblock.inode_table_start, inode_table_blocks);
+		let inode_handler = INodeTableHandler::new(superblock.inode_table_start, inode_table_blocks, superblock.data_start);
 		let now: u64 = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
 		let mut root_inode = INode::empty(FileType::Directory, u16::MAX, now);
 		let root_dir = Directory::new(0, 0);
-		root_inode.add_block(0);
+		inode_handler.add_block(device, &mut root_inode, 0, &vec![])?;
 		root_inode.size = BLOCK_SIZE as u64 * root_inode.blocks as u64; // directory entries will expand to fill all the available blocks
 		let directory_handler = DirectoryHandler::new(superblock.data_start, superblock.root_inode);
 		
@@ -1028,7 +1077,7 @@ impl FormatV1 {
 		superblock.free_inodes -= 1;
 
 		inode_handler.write_inode(device, 0, &root_inode)?;
-		directory_handler.write_directory_with_inode(device, &root_dir, &root_inode)?;
+		directory_handler.write_directory_with_inode(device, &root_dir, &root_inode, &inode_handler)?;
 		
 
 
@@ -1085,9 +1134,7 @@ impl FormatV1 {
 
 		
 		for i in 0..dir_inode.blocks {
-			// TODO: handle indirect
-
-			let block_ind = dir_inode.direct[i as usize];
+			let block_ind = self.inode_handler.get_block(device, &dir_inode, i)?;
 
 			if block_ind == INVALID_ADDRESS {
 				let reason = InvalidInodeData::InvalidAddress{ inode: dir_inode_ind, direct_ind: i as u16 };
@@ -1301,8 +1348,7 @@ impl FormatV1 {
 		}
 
 		for i in 0..inode.blocks {
-			// TODO: support indirect
-			let block_ind = inode.direct[i as usize];
+			let block_ind = self.inode_handler.get_block(device, &inode, i)?;
 
 			if block_ind == INVALID_ADDRESS {
 				let reason = InvalidInodeData::InvalidAddress{ inode: inode_ind, direct_ind: i as u16 };
@@ -1367,7 +1413,7 @@ mod tests {
 
 		// check root entries
 		let mut count = 0;
-		ffs.directory_handler.iterate(&mut device, &root, |entry, _block, offset| -> bool {
+		ffs.directory_handler.iterate(&mut device, &root, &ffs.inode_handler, |entry, _block, offset| -> bool {
 			if count == 0 {
 				assert_eq!(entry.name_len, 1);
 				assert_eq!(entry.name[0], b'.');
@@ -2053,7 +2099,7 @@ mod tests {
 
 		// check directory content
 		let mut count = 0;
-		ffs.directory_handler.iterate(device, &inode, |entry, block, offset| -> bool {
+		ffs.directory_handler.iterate(device, &inode, &ffs.inode_handler, |entry, block, offset| -> bool {
 			if count == 0 {
 				assert_eq!(entry.name_len, 1);
 				assert_eq!(entry.name[0], b'.');

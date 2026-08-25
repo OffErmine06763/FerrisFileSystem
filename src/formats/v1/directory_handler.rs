@@ -36,12 +36,12 @@ impl DirectoryHandler {
 
 
 
-	pub fn find_entry<D: BlockDevice>(&self, device: &mut D, dir_inode: &INode, name: &[u8]) -> FSResult<Option<(DirEntry, u32, usize)>> {
+	pub fn find_entry<D: BlockDevice>(&self, device: &mut D, dir_inode: &INode, inode_handler: &INodeTableHandler, name: &[u8]) -> FSResult<Option<(DirEntry, u32, usize)>> {
 		//! returns the DirEntry named 'name' in the specified directory, with RELATIVE data block index and offset in it where the entry is located.
 
 		let mut res: FSResult<Option<(DirEntry, u32, usize)>> = Ok(None);
 		
-		self.iterate(device, dir_inode, |entry: DirEntry, block: u32, offset: usize| -> bool {
+		self.iterate(device, dir_inode, inode_handler, |entry: DirEntry, block: u32, offset: usize| -> bool {
 			if !entry.is_free() && entry.name[0..entry.name_len as usize] == *name {
 				res = Ok(Some((entry, block, offset)));
 				return true;
@@ -120,7 +120,7 @@ impl DirectoryHandler {
 			let comp_name = Self::path_component_bytes(&comp);
 
 			// check if the current directory contains the component
-			let entry_opt = self.find_entry(device, &cur_inode, comp_name)?;
+			let entry_opt = self.find_entry(device, &cur_inode, inode_handler, comp_name)?;
 			if entry_opt.is_none() {
 				return Err(FSError::DoesNotExist{ path: progress.to_string_lossy().into_owned() });
 			}
@@ -181,13 +181,13 @@ impl DirectoryHandler {
 	}
 
 
-	pub fn can_fit<D: BlockDevice>(&self, device: &mut D, dir: &INode, to_insert: &DirEntry) -> FSResult<Option<(u32, u16)>> {
+	pub fn can_fit<D: BlockDevice>(&self, device: &mut D, dir: &INode, inode_handler: &INodeTableHandler, to_insert: &DirEntry) -> FSResult<Option<(u32, u16)>> {
 		//! checks whether the entry can be inserted in the directory without adding another data block.
 		//! if it can fit, returns the block index where it fits and the offset of the offset of the free region to use.
 
 		let mut res: FSResult<Option<(u32, u16)>> = Ok(None);
 		
-		self.iterate(device, dir, |entry: DirEntry, block: u32, offset: usize| -> bool {
+		self.iterate(device, dir, inode_handler, |entry: DirEntry, block: u32, offset: usize| -> bool {
 			// we return the first free region big enough.
 			// deletion behavior guarantees that there will not be two contiguous free regions
 			if entry.is_free() {
@@ -207,7 +207,7 @@ impl DirectoryHandler {
 	}
 
 
-	pub fn write_directory_with_inode<D: BlockDevice>(&self, device: &mut D, directory: &Directory, inode: &INode) -> FSResult<()> {
+	pub fn write_directory_with_inode<D: BlockDevice>(&self, device: &mut D, directory: &Directory, inode: &INode, inode_handler: &INodeTableHandler) -> FSResult<()> {
 		//! writes the directory entries in the order provided.
 		//! expects the directory inode to have enough allocated blocks.
 		//! the entries must be correctly formatted: each block utilized must be filled entirely
@@ -247,7 +247,7 @@ impl DirectoryHandler {
 		// Second pass: perform the writes.
 		let mut buf = [0u8; BLOCK_SIZE];
 		let mut offset = 0usize;
-		let mut data_block_dst = 0usize;
+		let mut data_block_dst = 0u32;
 
 		for e in &directory.entries {
 			let record_len = e.record_len as usize;
@@ -256,7 +256,8 @@ impl DirectoryHandler {
 			offset += record_len;
 
 			if offset == BLOCK_SIZE {
-				device.write_block(self.data_start + inode.direct[data_block_dst], &buf)?;
+				let block = inode_handler.get_block(device, &inode, data_block_dst)?;
+				device.write_block(self.data_start + block, &buf)?;
 
 				buf = [0u8; BLOCK_SIZE];
 				offset = 0;
@@ -385,21 +386,21 @@ impl DirectoryHandler {
 	}
 
 
-	pub fn get_entries<D: BlockDevice>(&self, device: &mut D, dir: &INode, include_free: bool) -> FSResult<Vec<DirEntry>> {
+	pub fn get_entries<D: BlockDevice>(&self, device: &mut D, dir: &INode, inode_handler: &INodeTableHandler, include_free: bool) -> FSResult<Vec<DirEntry>> {
 		//! returns the contents of the directory
 
 		let mut entries = Vec::<DirEntry>::new();
 		
 		// perform this check only once, even if it means duplicating some code.
 		if include_free {
-			self.iterate(device, dir, |entry: DirEntry, _block: u32, _offset: usize| -> bool {
+			self.iterate(device, dir, inode_handler, |entry: DirEntry, _block: u32, _offset: usize| -> bool {
 				entries.push(entry);
 				return false;
 			})?;
 		}
 		else 
 		{
-			self.iterate(device, dir, |entry: DirEntry, _block: u32, _offset: usize| -> bool {
+			self.iterate(device, dir, inode_handler, |entry: DirEntry, _block: u32, _offset: usize| -> bool {
 				if !entry.is_free() {
 					entries.push(entry);
 				}
@@ -411,7 +412,7 @@ impl DirectoryHandler {
 	}
 
 
-	pub fn iterate<D: BlockDevice, F: FnMut(DirEntry, u32, usize) -> bool>(&self, device: &mut D, dir_inode: &INode, mut callback: F) -> FSResult<()> {
+	pub fn iterate<D: BlockDevice, F: FnMut(DirEntry, u32, usize) -> bool>(&self, device: &mut D, dir_inode: &INode, inode_handler: &INodeTableHandler, mut callback: F) -> FSResult<()> {
 		//! iterate over the entries of the given directory, calling the provided callback with also the RELATIVE data block index and offset in the block.
 		//! the callback should return true to stop iterating.
 		//! the function always throws AFTER passing the problematic entry to the callback, and throws regardless of the callback return value.
@@ -421,7 +422,8 @@ impl DirectoryHandler {
 
 		// for every block used by the given directory
 		for block in 0..dir_inode.blocks {
-			let absolute_block = dir_inode.direct[block as usize] + self.data_start;
+			let rel_block = inode_handler.get_block(device, &dir_inode, block)?;
+			let absolute_block = rel_block + self.data_start;
 			device.read_block(absolute_block, &mut buf)?;
 
 			// parse all the entries
@@ -430,7 +432,7 @@ impl DirectoryHandler {
 				let parsed = DirEntry::deserialize(&buf, offset);
 				let len = parsed.record_len as usize;
 				
-				let res = callback(parsed, dir_inode.direct[block as usize], offset);
+				let res = callback(parsed, rel_block, offset);
 
 				if offset + len > BLOCK_SIZE {
 					return Err(FSError::InvalidDir(InvalidDirKind::EntriesOverfillBlock));
@@ -507,10 +509,11 @@ mod tests {
 
 		// create the handlers we need
 		let directory_handler = DirectoryHandler::new(superblock.data_start, superblock.root_inode);
-		let inode_handler = INodeTableHandler::new(superblock.inode_table_start, superblock.inode_table_blocks);
+		let inode_handler = INodeTableHandler::new(superblock.inode_table_start, superblock.inode_table_blocks, superblock.data_start);
 
 		let mut root_inode = inode_handler.read_inode(&mut device, superblock.root_inode)?;
-		root_inode.add_block(root_inode.direct[0] + 1);
+		let block = root_inode.direct[0] + 1;
+		inode_handler.add_block(&mut device, &mut root_inode, block, &vec![])?;
 
 		
 		// create dummy entry
@@ -518,7 +521,7 @@ mod tests {
 		let to_insert = DirEntry::new(5, FileType::File, name);
 
 		// find a spot to insert it
-		let fit_res = directory_handler.can_fit(&mut device, &root_inode, &to_insert)?;
+		let fit_res = directory_handler.can_fit(&mut device, &root_inode, &inode_handler, &to_insert)?;
 		assert!(fit_res.is_some());
 		let (block, offset) = fit_res.unwrap();
 		assert_eq!(block, root_inode.direct[0]);
@@ -532,7 +535,7 @@ mod tests {
 		
 		
 		// find it
-		let res = directory_handler.find_entry(&mut device, &root_inode, name.as_bytes())?;
+		let res = directory_handler.find_entry(&mut device, &root_inode, &inode_handler, name.as_bytes())?;
 		assert!(res.is_some());
 		assert_eq!(res.unwrap().1, block);
 		assert_eq!(res.unwrap().2 as u16, offset);
@@ -583,7 +586,7 @@ mod tests {
 
 
 		// find it
-		let res = directory_handler.find_entry(&mut device, &root_inode, name.as_bytes())?;
+		let res = directory_handler.find_entry(&mut device, &root_inode, &inode_handler, name.as_bytes())?;
 		assert!(res.is_some());
 		assert_eq!(res.unwrap().1, root_inode.direct[1]);
 		assert_eq!(res.unwrap().2 as u16, 0);
@@ -606,7 +609,7 @@ mod tests {
 
 		// create the handlers we need
 		let directory_handler = DirectoryHandler::new(superblock.data_start, superblock.root_inode);
-		let inode_handler = INodeTableHandler::new(superblock.inode_table_start, superblock.inode_table_blocks);
+		let inode_handler = INodeTableHandler::new(superblock.inode_table_start, superblock.inode_table_blocks, superblock.data_start);
 
 
 		// create a directory
@@ -614,8 +617,8 @@ mod tests {
 		let parent_inode_ind = 2;
 		let mut directory = Directory::new(self_inode_ind, parent_inode_ind);
 		let mut inode = INode::empty(FileType::Directory, 0, 0);
-		inode.add_block(5);
-		inode.add_block(6);
+		inode_handler.add_block(&mut device, &mut inode, 5, &vec![])?;
+		inode_handler.add_block(&mut device, &mut inode, 6, &vec![])?;
 
 		// create dummy entry
 		let name = "banana";
@@ -647,10 +650,10 @@ mod tests {
 		// final state
 		// . .. dummy dummy free(50) dummy free(*) | free(20) dummy dummy free(*)
 
-		directory_handler.write_directory_with_inode(&mut device, &directory, &inode)?;
+		directory_handler.write_directory_with_inode(&mut device, &directory, &inode, &inode_handler)?;
 
 		// retrieve the entries
-		let res = directory_handler.get_entries(&mut device, &inode, true)?;
+		let res = directory_handler.get_entries(&mut device, &inode, &inode_handler, true)?;
 		assert_eq!(res.len(), directory.entries.len());
 		for i in 0..res.len() {
 			assert_entry(&res[i], &directory.entries[i]);

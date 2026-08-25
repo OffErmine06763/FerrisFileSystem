@@ -2,46 +2,53 @@ use crate::fs_utils::*;
 use crate::file::FileType;
 
 
-
+/// Metadata for each file, directory or symlink.
+/// Note: maximum size is 4GB
 pub struct INode {
+	/// Bytes actually used by the file.
 	pub size: u64,
 	pub file_type: FileType,
 	pub permissions: u16,
 
-	pub direct: [u32; 12],
+	/// RELATIVE addresses of data blocks associated with the file
+	pub direct: [u32; Self::DIRECT_COUNT],
+	/// RELATIVE address of a data block containing direct addresses
 	pub indirect: u32,
+	/// RELATIVE address of a data block containing indirect addresses
+	pub double: u32,
 
 	pub created: u64,
 	pub modified: u64,
 
+	/// Number of directory entries pointing to this file. NOTE: this counts hard links, NOT Symlinks
 	pub links: u16,
+	/// Number of blocks associated with this file, could be greater than the minimum to store the file contents (size)
 	pub blocks: u32,
 }
 
 
 impl INode {
+	pub const DIRECT_COUNT: usize = 12;
+	pub const INDIRECT_COUNT: usize = BLOCK_SIZE / 4;
+	pub const DOUBLE_COUNT: usize = Self::INDIRECT_COUNT * Self::INDIRECT_COUNT;
+	pub const MAX_BLOCKS: usize = Self::DIRECT_COUNT + Self::INDIRECT_COUNT + Self::DOUBLE_COUNT;
+	pub const MAX_SIZE: usize = Self::MAX_BLOCKS * BLOCK_SIZE;
+
+
 	pub fn on_disk_size() -> usize {
-		const _: () = assert!(std::mem::size_of::<INode>() <= 88, "allocated memory size insufficient for storing the inode");
-		return 88;
+		const _: () = assert!(std::mem::size_of::<INode>() <= 96, "allocated memory size insufficient for storing the inode");
+		return 96;
 	}
 	pub fn inodes_per_block() -> u32 {
 		(BLOCK_SIZE / Self::on_disk_size()) as u32
 	}
 
 
+
 	pub fn empty(file_type: FileType, permissions: u16, created: u64) -> Self {
-		Self { size: 0, file_type, permissions, direct: [INVALID_ADDRESS; 12], indirect: INVALID_ADDRESS, created, modified: created, links: 1, blocks: 0 }
+		Self { size: 0, file_type, permissions, direct: [INVALID_ADDRESS; 12], indirect: INVALID_ADDRESS, double: INVALID_ADDRESS, created, modified: created, links: 1, blocks: 0 }
 	}
 
-
-	pub fn add_block(&mut self, block: u32) {
-		if self.blocks >= 12 {
-			todo!();
-		}
-
-		self.direct[self.blocks as usize] = block;
-		self.blocks += 1;
-	}
 
 
 	pub fn serialize(&self, buf: &mut [u8; BLOCK_SIZE]) {
@@ -73,6 +80,7 @@ impl INode {
 			write_field!(i);
 		}
 		write_field!(self.indirect);
+		write_field!(self.double);
 
 		write_field!(self.created);
 		write_field!(self.modified);
@@ -115,6 +123,7 @@ impl INode {
 		Self {
 			size, file_type, permissions, direct,
 			indirect: read_field!(u32),
+			double: read_field!(u32),
 			created: read_field!(u64),
 			modified: read_field!(u64),
 			links, blocks,

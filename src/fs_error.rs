@@ -40,16 +40,23 @@ pub enum FSErrorCode {
 	INodeTableFull = Self::generic(16),
 	DataRegionFull = Self::generic(17),
 	
-	InvalidInput				  = Self::generic(18),
-	InputDirEntriesOverfillBlock  = Self::generic(19),
-	InputDirEntriesUnderfillBlock = Self::generic(20),
-	InputOffsetNotAtDirEntryStart = Self::generic(21),
-	InputINodeIndexOOB			  = Self::generic(22),
-	InputBlockIndexOOB			  = Self::generic(23),
-	InputUnknownFileType		  = Self::generic(24),
+	MaxINodeSize = Self::generic(18),
+	
+	InvalidInput				  = Self::generic(19),
+	InputDirEntriesOverfillBlock  = Self::generic(20),
+	InputDirEntriesUnderfillBlock = Self::generic(21),
+	InputOffsetNotAtDirEntryStart = Self::generic(22),
+	InputINodeIndexOOB			  = Self::generic(23),
+	InputBlockIndexOOB			  = Self::generic(24),
+	InputIndexOOB				  = Self::generic(25),
+	InputINodeBlockIndexOOB		  = Self::generic(26),
+	InputUnknownFileType		  = Self::generic(27),
+	InputNotEnoughAllocatedBlocks = Self::generic(28),
 
-	EmptySymlink               = Self::generic(25),
-	MaximumSymlinkDepthReached = Self::generic(26),
+	EmptySymlink               = Self::generic(29),
+	MaximumSymlinkDepthReached = Self::generic(30),
+	
+	DeletingRoot = Self::generic(31),
 
 	InvalidDirEntry         = Self::corruption(1),
 	ZeroLengthDirEntry      = Self::corruption(2),
@@ -135,8 +142,12 @@ pub enum InvalidInputKind {
 		max: u32,
 	}, // "inode index past inode table region"
 	BlockIndexOOB, // "block out of range"
+	IndexOOB, // "index out of range"
+	INodeBlockIndexOOB, // "index in the array of blocks assigned to an inode OOB"
 
 	UnknownFileType, // "invalid file type provided"
+
+	NotEnoughAllocatedBlocks,
 }
 
 #[derive(Debug)]
@@ -182,11 +193,15 @@ pub enum FSError {
 	DirEntryNotFree,
 
 	StorageFull(StorageFullKind),
+	
+	MaxINodeSize,
 
 	EmptySymlink {
 		path: String,	
 	},
 	MaximumSymlinkDepthReached,
+
+	DeletingRoot,
 	
 	InvalidDirEntry(InvalidDirEntryKind),
 	InvalidDir(InvalidDirKind),
@@ -228,8 +243,12 @@ impl FSError {
 			Self::StorageFull(StorageFullKind::INodeTableFull) => FSErrorCode::INodeTableFull,
 			Self::StorageFull(StorageFullKind::DataRegionFull) => FSErrorCode::DataRegionFull,
 			
+			Self::MaxINodeSize => FSErrorCode::MaxINodeSize,
+			
 			Self::EmptySymlink { .. } => FSErrorCode::EmptySymlink,
 			Self::MaximumSymlinkDepthReached { .. } => FSErrorCode::MaximumSymlinkDepthReached,
+			
+			Self::DeletingRoot => FSErrorCode::DeletingRoot,
 
 			Self::InvalidDirEntry(InvalidDirEntryKind::None)            => FSErrorCode::InvalidDirEntry,
 			Self::InvalidDirEntry(InvalidDirEntryKind::ZeroLength)      => FSErrorCode::ZeroLengthDirEntry,
@@ -252,7 +271,10 @@ impl FSError {
 			Self::InvalidInput(InvalidInputKind::OffsetNotAtDirEntryStart) => FSErrorCode::InputOffsetNotAtDirEntryStart,
 			Self::InvalidInput(InvalidInputKind::INodeIndexOOB { .. })	   => FSErrorCode::InputINodeIndexOOB,
 			Self::InvalidInput(InvalidInputKind::BlockIndexOOB { .. })	   => FSErrorCode::InputBlockIndexOOB,
+			Self::InvalidInput(InvalidInputKind::IndexOOB { .. })	       => FSErrorCode::InputIndexOOB,
+			Self::InvalidInput(InvalidInputKind::INodeBlockIndexOOB { .. })=> FSErrorCode::InputINodeBlockIndexOOB,
 			Self::InvalidInput(InvalidInputKind::UnknownFileType)		   => FSErrorCode::InputUnknownFileType,
+			Self::InvalidInput(InvalidInputKind::NotEnoughAllocatedBlocks) => FSErrorCode::InputNotEnoughAllocatedBlocks,
 
 			Self::InvalidMagic => FSErrorCode::InvalidMagic,
 
