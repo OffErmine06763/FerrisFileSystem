@@ -2,6 +2,7 @@ use crate::fs_utils::*;
 use crate::fs_error::*;
 use crate::device::block_device::{self, BlockDevice};
 use crate::device::memory_device::MemoryDevice;
+use crate::device::cached_device::CachedDevice;
 use crate::formats::format::*;
 use crate::file::{File, FileType};
 use crate::formats::v1::format::FormatV1;
@@ -76,6 +77,9 @@ impl<D: BlockDevice> FFS<D> {
 		self.format.free_space(&mut self.device)
 	}
 	
+	pub fn flush(&mut self) -> FSResult<()> {
+		self.format.flush(&mut self.device)
+	}
 
 	pub fn check_integrity(&mut self) -> FSResult<IntegrityResult> {
 		self.format.check_integrity(&mut self.device)
@@ -83,8 +87,28 @@ impl<D: BlockDevice> FFS<D> {
 }
 
 
+
 impl FFS<MemoryDevice> {
 	pub fn save<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
 		self.device.save(path)
+	}
+}
+
+impl FFS<CachedDevice<MemoryDevice>> {
+	pub fn save<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+		self.device.save(path)
+	}
+}
+
+
+impl<D: BlockDevice> Drop for FFS<D> {
+	fn drop(&mut self) {
+		let res = self.flush();
+		#[cfg(debug_assertions)]
+		{
+			if res.is_err() {
+				println!("Failed to flush filesystem on destruction, error: {}", res.err().unwrap());
+			}
+		}
 	}
 }

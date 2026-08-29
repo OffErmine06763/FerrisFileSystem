@@ -406,6 +406,7 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 	}
 
 
+
 	fn read(&mut self, device: &mut D, file: &File, buf: &mut [u8]) -> FSResult<usize> {
 		//! fills the buf with the file contents at the current offset, then increments the offset.
 		//! returns the number of bytes actually read.
@@ -601,12 +602,15 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 		let metadata = self.open_files.get_mut(&file.id).unwrap();
 		let mut inode = self.inode_handler.read_inode(device, metadata.inode)?;
 		if size < inode.size {
+			let now: u64 = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+			inode.modified = now;
 			inode.size = size;
 			self.inode_handler.write_inode(device, metadata.inode, &inode)?;
 		}
 
 		Ok(())
 	}
+
 
 
 	fn edit_symlink(&mut self, device: &mut D, path_str: &str, path_tgt: &str) -> FSResult<()> {
@@ -652,6 +656,12 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 
 	fn free_space(&mut self, _device: &mut D) -> FSResult<usize> {
 		Ok(self.free_data_blocks_count() as usize * BLOCK_SIZE)
+	}
+
+
+	fn flush(&mut self, device: &mut D) -> FSResult<()> {
+		//! writes to the device all cached data
+		device.flush()
 	}
 
 
@@ -947,6 +957,8 @@ impl FormatV1 {
 		buf[0..path_tgt.len()].copy_from_slice(path_tgt.as_bytes());
 		device.write_block(data_block, &buf)?;
 
+		let now: u64 = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+		inode.modified = now;
 		inode.size = path_tgt.len() as u64;
 		self.inode_handler.write_inode(device, index, &inode)?;
 

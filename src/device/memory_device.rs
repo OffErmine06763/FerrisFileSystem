@@ -35,6 +35,9 @@ impl BlockDevice for MemoryDevice {
 		self.blocks.resize(blocks as usize, [0u8; BLOCK_SIZE]);
 		Ok(())
 	}
+	fn flush(&mut self) -> FSResult<()> {
+		Ok(())
+	}
 }
 
 impl MemoryDevice {

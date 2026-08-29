@@ -54,7 +54,6 @@ pub trait FsFormat<D: BlockDevice> {
 
 	fn delete(&mut self, device: &mut D, path: &str) -> FSResult<()>;
 	
-
 	fn file_exists(&mut self, device: &mut D, path: &str) -> FSResult<(bool, Option<FileType>)>;
 	fn open_file(&mut self, device: &mut D, path: &str) -> FSResult<File>;
 	fn close_file(&mut self, device: &mut D, file: &File) -> FSResult<()>;
@@ -69,6 +68,9 @@ pub trait FsFormat<D: BlockDevice> {
 	fn get_directory_content(&mut self, device: &mut D, path: &str) -> FSResult<DirectoryContentResult>;
 	
 	fn free_space(&mut self, device: &mut D) -> FSResult<usize>;
+
+	fn flush(&mut self, device: &mut D) -> FSResult<()>;
 	
+
 	fn check_integrity(&self, device: &mut D) -> FSResult<IntegrityResult>;
 }

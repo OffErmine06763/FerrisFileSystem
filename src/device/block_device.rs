@@ -9,4 +9,5 @@ pub trait BlockDevice {
 	fn write_block(&mut self, block: u32, buf: &[u8; BLOCK_SIZE]) -> FSResult<()>;
 	fn block_count(&self) -> u32;
 	fn resize(&mut self, blocks: u32) -> FSResult<()>;
+	fn flush(&mut self) -> FSResult<()>;
 }

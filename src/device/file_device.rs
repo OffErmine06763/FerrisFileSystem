@@ -40,6 +40,9 @@ impl BlockDevice for FileDevice {
 		self.file.set_len(blocks as u64 * BLOCK_SIZE as u64)?;
 		Ok(())
 	}
+	fn flush(&mut self) -> FSResult<()> {
+		Ok(())
+	}
 }
 
 impl FileDevice {
