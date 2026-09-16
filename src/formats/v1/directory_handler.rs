@@ -127,7 +127,7 @@ impl DirectoryHandler {
 
 			(entry, entry_block, entry_offset) = entry_opt.unwrap();
 			if entry.inode == INVALID_ADDRESS {
-				return Err(FSError::InvalidDirEntry(InvalidDirEntryKind::InvalidINode));
+				return Err(FSError::InvalidDirEntry { kind: InvalidDirEntryKind::InvalidINode, block: entry_block, offset: entry_offset });
 			} // TODO: check for address OOB
 
 			let inode = inode_handler.read_inode(device, entry.inode)?;
@@ -135,7 +135,7 @@ impl DirectoryHandler {
 			// if the inode is a symlink, we have to follow it, otherwise just prepare the next iteration
 			if inode.file_type == FileType::Symlink && (!is_final_component || resolve_final_symlink) {
 				if it >= 40 {
-					return Err(FSError::MaximumSymlinkDepthReached);
+					return Err(FSError::MaximumSymlinkDepthReached { path: progress.to_string_lossy().into_owned(), max_depth: 40 });
 				} if inode.size == 0 || inode.blocks == 0 {
 					return Err(FSError::EmptySymlink{ path: progress.to_string_lossy().into_owned() });
 				}
@@ -223,7 +223,7 @@ impl DirectoryHandler {
 			let record_len = e.record_len as usize;
 
 			if offset + record_len > BLOCK_SIZE {
-				return Err(FSError::InvalidInput(InvalidInputKind::DirEntriesOverfillBlock));
+				return Err(FSError::InvalidInput(InvalidInputKind::DirEntriesOverfillBlock { block: data_block_dst as u32, offset, record_len }));
 			}
 
 			offset += record_len;
@@ -236,7 +236,7 @@ impl DirectoryHandler {
 
 		// The directory must end exactly on a block boundary.
 		if offset != 0 {
-			return Err(FSError::InvalidInput(InvalidInputKind::DirEntriesUnderfillBlock));
+			return Err(FSError::InvalidInput(InvalidInputKind::DirEntriesUnderfillBlock { block: data_block_dst as u32, filled: offset }));
 		}
 
 		if data_block_dst > 12 {
@@ -282,9 +282,9 @@ impl DirectoryHandler {
 
 		// validate the free region, it must be either as big as the new entry or big enough to store also a new free_entry
 		if !free_region.is_free() {
-			return Err(FSError::DirEntryNotFree);
+			return Err(FSError::DirEntryNotFree { block, offset: free_region_offset });
 		} if free_region.record_len != entry.record_len && free_region.record_len < entry.record_len + DirEntry::min_free_size() {
-			return Err(FSError::DirFreeRegionTooSmall);
+			return Err(FSError::DirFreeRegionTooSmall { block, offset: free_region_offset, available: free_region.record_len, required: entry.record_len + DirEntry::min_free_size() });
 		}
 
 		// move it forward (if not fully utilized)
@@ -309,7 +309,7 @@ impl DirectoryHandler {
 
 		// the following shouldn't happen, since the maximum size of an entry is strictly less than BLOCK_SIZE
 		if remainder != 0 && remainder < DirEntry::min_free_size() {
-			return Err(FSError::DirFreeRegionTooSmall);
+			return Err(FSError::DirFreeRegionTooSmall { block, offset: 0, available: remainder, required: DirEntry::min_free_size() });
 		}
 		
 		entry.serialize(&mut buf, 0);
@@ -344,7 +344,7 @@ impl DirectoryHandler {
 		while prev_offset < offset {
 			let parsed = DirEntry::deserialize(&buf, prev_offset as usize);
 			if prev_offset + parsed.record_len > offset {
-				return Err(FSError::InvalidInput(InvalidInputKind::OffsetNotAtDirEntryStart));
+				return Err(FSError::InvalidInput(InvalidInputKind::OffsetNotAtDirEntryStart { block, offset }));
 			}
 			if prev_offset + parsed.record_len == offset {
 				prev_entry = Some(parsed);
@@ -435,9 +435,9 @@ impl DirectoryHandler {
 				let res = callback(parsed, rel_block, offset);
 
 				if offset + len > BLOCK_SIZE {
-					return Err(FSError::InvalidDir(InvalidDirKind::EntriesOverfillBlock));
+					return Err(FSError::InvalidDir { kind: InvalidDirKind::EntriesOverfillBlock, block: rel_block, offset });
 				} if len == 0 {
-					return Err(FSError::InvalidDirEntry(InvalidDirEntryKind::ZeroLength));
+					return Err(FSError::InvalidDirEntry { kind: InvalidDirEntryKind::ZeroLength, block: rel_block, offset });
 				}
 
 				if res { return Ok(()); }

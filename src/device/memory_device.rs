@@ -16,14 +16,14 @@ pub struct MemoryDevice {
 impl BlockDevice for MemoryDevice {
 	fn read_block(&mut self, block: u32, buf: &mut [u8; BLOCK_SIZE]) -> FSResult<()> {
 		if block >= self.block_count() {
-			return Err(FSError::InvalidInput(InvalidInputKind::BlockIndexOOB));
+			return Err(FSError::InvalidInput(InvalidInputKind::BlockIndexOOB { index: block, max: self.block_count() }));
 		}
 		buf.copy_from_slice(&self.blocks[block as usize]);
 		Ok(())
 	}
 	fn write_block(&mut self, block: u32, buf: &[u8; BLOCK_SIZE]) -> FSResult<()> {
 		if block >= self.block_count() {
-			return Err(FSError::InvalidInput(InvalidInputKind::BlockIndexOOB));
+			return Err(FSError::InvalidInput(InvalidInputKind::BlockIndexOOB { index: block, max: self.block_count() }));
 		}
 		self.blocks[block as usize] = *buf;
 		Ok(())

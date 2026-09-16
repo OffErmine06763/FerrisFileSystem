@@ -206,7 +206,7 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 		let resolution_result = self.directory_handler.resolve(device, path, self.superblock.root_inode, &self.inode_handler, false)?;
 		let file_inode_ind = resolution_result.target_inode_index;
 		if file_inode_ind == self.superblock.root_inode {
-			return Err(FSError::DeletingRoot);
+			return Err(FSError::DeletingRoot { path: path.to_string_lossy().into_owned() });
 		}
 
 		let mut file_inode = resolution_result.target_inode;
@@ -234,7 +234,7 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 			})?;
 
 			if !empty {
-				return Err(FSError::DirectoryNotEmpty);
+				return Err(FSError::DirectoryNotEmpty { path: path.to_string_lossy().into_owned() });
 			}
 		}
 
@@ -422,7 +422,7 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 
 		// check that the inode is well formed: the size falls inside the allocated blocks
 		if inode.blocks as usize * BLOCK_SIZE < inode.size as usize {
-			return Err(FSError::InvalidINode(InvalidINodeKind::SizeGreaterThanAllocatedRegion));
+			return Err(FSError::InvalidINode { kind: InvalidINodeKind::SizeGreaterThanAllocatedRegion, size: inode.size, blocks: inode.blocks });
 		}
 
 		let mut read = 0usize;
@@ -436,9 +436,9 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 
 			// check that the address is acceptable
 			if block_ind == INVALID_ADDRESS {
-				return Err(FSError::InvalidINode(InvalidINodeKind::InvalidDirect{ ind: block as u16 }));
+				return Err(FSError::InvalidINode { kind: InvalidINodeKind::InvalidDirect { ind: block as u16, address: block_ind }, size: inode.size, blocks: inode.blocks });
 			} else if block_ind > self.block_allocator.max_index() {
-				return Err(FSError::InvalidINode(InvalidINodeKind::DirectOOB{ ind: block as u16 }));
+				return Err(FSError::InvalidINode { kind: InvalidINodeKind::DirectOOB { ind: block as u16, address: block_ind, max: self.block_allocator.max_index() }, size: inode.size, blocks: inode.blocks });
 			}
 
 			let block_address = self.superblock.data_start + block_ind;
@@ -495,7 +495,7 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 			// allocate metadata
 			let metadata_inds: Vec<u32> = self.block_allocator.find_free(device, to_alloc_inode_metadata as u32)?;
 			if metadata_inds.len() < to_alloc_inode_metadata as usize {
-				return Err(FSError::StorageFull(StorageFullKind::DataRegionFull));
+				return Err(FSError::StorageFull { kind: StorageFullKind::DataRegionFull, requested: to_alloc_inode_metadata as u32, available: metadata_inds.len() as u32 });
 			}
 			self.block_allocator.allocate(device, &metadata_inds)?;
 			
@@ -504,7 +504,7 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 			if data_inds.is_empty() {
 				// return only if empty, we still want to write all we can
 				self.block_allocator.deallocate(device, &metadata_inds)?;
-				return Err(FSError::StorageFull(StorageFullKind::DataRegionFull));
+				return Err(FSError::StorageFull { kind: StorageFullKind::DataRegionFull, requested: to_alloc_data as u32, available: data_inds.len() as u32 });
 			}
 			self.block_allocator.allocate(device, &data_inds)?;
 
@@ -526,9 +526,9 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 			// check that the address is acceptable
 			let block_ind = self.inode_handler.get_block(device, &inode, block)?;
 			if block_ind == INVALID_ADDRESS {
-				return Err(FSError::InvalidINode(InvalidINodeKind::InvalidDirect{ ind: block as u16 }));
+				return Err(FSError::InvalidINode { kind: InvalidINodeKind::InvalidDirect { ind: block as u16, address: block_ind }, size: inode.size, blocks: inode.blocks });
 			} else if block_ind > self.block_allocator.max_index() {
-				return Err(FSError::InvalidINode(InvalidINodeKind::DirectOOB{ ind: block as u16 }));
+				return Err(FSError::InvalidINode { kind: InvalidINodeKind::DirectOOB { ind: block as u16, address: block_ind, max: self.block_allocator.max_index() }, size: inode.size, blocks: inode.blocks });
 			}
 
 			let block_address = self.superblock.data_start + block_ind;
@@ -916,9 +916,9 @@ impl FormatV1 {
 
 		// use the cached values to avoid iterating over the whole bitmap when it is full
 		if self.superblock.free_inodes < inodes {
-			return Err(FSError::StorageFull(StorageFullKind::INodeTableFull));
+			return Err(FSError::StorageFull { kind: StorageFullKind::INodeTableFull, requested: inodes, available: self.superblock.free_inodes });
 		} if self.superblock.free_data < data {
-			return Err(FSError::StorageFull(StorageFullKind::DataRegionFull));
+			return Err(FSError::StorageFull { kind: StorageFullKind::DataRegionFull, requested: data, available: self.superblock.free_data });
 		}
 
 		// find the indicies of the free blocks
@@ -928,10 +928,10 @@ impl FormatV1 {
 		// this can happen when the cached value in the superblock is wrong, in which case we want to update it
 		if inode_inds.len() < inodes as usize {
 			self.superblock.free_inodes = inode_inds.len() as u32;
-			return Err(FSError::StorageFull(StorageFullKind::INodeTableFull));
+			return Err(FSError::StorageFull { kind: StorageFullKind::INodeTableFull, requested: inodes, available: inode_inds.len() as u32 });
 		} if data_inds.len() < data as usize {
 			self.superblock.free_data = data_inds.len() as u32;
-			return Err(FSError::StorageFull(StorageFullKind::DataRegionFull));
+			return Err(FSError::StorageFull { kind: StorageFullKind::DataRegionFull, requested: data, available: data_inds.len() as u32 });
 		}
 
 		self.inode_allocator.allocate(device, &inode_inds)?;
@@ -1004,7 +1004,7 @@ impl FormatV1 {
 		device.read_block(0, &mut buf)?;
 		let superblock = Superblock::deserialize(&buf);
 		if superblock.magic != MAGIC {
-			return Err(FSError::InvalidMagic);
+			return Err(FSError::InvalidMagic { expected: MAGIC, actual: superblock.magic });
 		}
 
 		let data_blocks = superblock.total_blocks - superblock.inode_bitmap_blocks - superblock.inode_table_blocks - superblock.block_bitmap_blocks - 1;

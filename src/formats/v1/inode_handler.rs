@@ -104,13 +104,13 @@ impl INodeTableHandler {
 		let current = inode.blocks as usize;
 		let new_count = current + blocks.len();
 		if new_count > INode::MAX_BLOCKS {
-			return Err(FSError::MaxINodeSize);
+			return Err(FSError::MaxINodeSize { requested_blocks: new_count as u32, max_blocks: INode::MAX_BLOCKS as u32 });
 		}
 
 		// Determine how many metadata blocks are required.
 		let required_metadata = self.blocks_necessary_to_grow_n(inode, blocks.len() as u32) as usize;
 		if pool.len() < required_metadata {
-			return Err(FSError::InvalidInput(InvalidInputKind::NotEnoughAllocatedBlocks));
+			return Err(FSError::InvalidInput(InvalidInputKind::NotEnoughAllocatedBlocks { required: required_metadata as u32, provided: pool.len() as u32 }));
 		}
 
 		let mut pool_index = 0;
@@ -127,7 +127,7 @@ impl INodeTableHandler {
 				let index = index - INode::DIRECT_COUNT - INode::INDIRECT_COUNT;
 				self.write_double_indirect(device, inode, block, pool, &mut pool_index, index)?;
 			} else {
-				return Err(FSError::MaxINodeSize);
+				return Err(FSError::MaxINodeSize { requested_blocks: index as u32 + 1, max_blocks: INode::MAX_BLOCKS as u32 });
 			}
 
 			inode.blocks += 1;
@@ -142,7 +142,7 @@ impl INodeTableHandler {
 		//! to know how many new blocks are necessary for adding the data block, use blocks_necessary_to_grow
 		let index = inode.blocks as usize;
 		if index >= INode::MAX_BLOCKS {
-			return Err(FSError::MaxINodeSize);
+			return Err(FSError::MaxINodeSize { requested_blocks: index as u32 + 1, max_blocks: INode::MAX_BLOCKS as u32 });
 		}
 
 		if index < INode::DIRECT_COUNT {
@@ -154,7 +154,7 @@ impl INodeTableHandler {
 			let index = inode.blocks as usize - INode::DIRECT_COUNT - INode::INDIRECT_COUNT;
 			self.write_double_indirect(device, inode, block, pool, &mut 0, index)?;
 		} else {
-			return Err(FSError::MaxINodeSize);
+			return Err(FSError::MaxINodeSize { requested_blocks: index as u32 + 1, max_blocks: INode::MAX_BLOCKS as u32 });
 		}
 
 		inode.blocks += 1;
@@ -169,7 +169,7 @@ impl INodeTableHandler {
 		if index == 0 {
 			// first usage of the indirect block, assign a new metadata block to the inode
 			if pool.is_empty() {
-				return Err(FSError::InvalidInput(InvalidInputKind::NotEnoughAllocatedBlocks));
+				return Err(FSError::InvalidInput(InvalidInputKind::NotEnoughAllocatedBlocks { required: 1, provided: pool.len() as u32 }));
 			}
 			indirect = pool[*pool_index];
 			*pool_index += 1;
@@ -197,7 +197,7 @@ impl INodeTableHandler {
 		if index == 0 {
 			// first usage of the double indirect block, assign a new metadata block to the inode
 			if pool.len() < 2 {
-				return Err(FSError::InvalidInput(InvalidInputKind::NotEnoughAllocatedBlocks));
+				return Err(FSError::InvalidInput(InvalidInputKind::NotEnoughAllocatedBlocks { required: 2, provided: pool.len() as u32 }));
 			}
 			double = pool[*pool_index];
 			*pool_index += 1;
@@ -211,7 +211,7 @@ impl INodeTableHandler {
 		if direct_offset == 0 {
 			// new indirect within the double indirect
 			if pool.is_empty() {
-				return Err(FSError::InvalidInput(InvalidInputKind::NotEnoughAllocatedBlocks));
+				return Err(FSError::InvalidInput(InvalidInputKind::NotEnoughAllocatedBlocks { required: 1, provided: pool.len() as u32 }));
 			}
 			indirect = pool[*pool_index];
 			*pool_index += 1;
@@ -242,9 +242,9 @@ impl INodeTableHandler {
 		//!			InvalidInput(IndexOOB) if index is greater than the number of blocks of the inode
 
 		if index as usize >= INode::MAX_BLOCKS {
-			return Err(FSError::InvalidInput(InvalidInputKind::INodeBlockIndexOOB));
+			return Err(FSError::InvalidInput(InvalidInputKind::INodeBlockIndexOOB { index, max: INode::MAX_BLOCKS as u32 }));
 		} if index >= inode.blocks {
-			return Err(FSError::InvalidInput(InvalidInputKind::IndexOOB));
+			return Err(FSError::InvalidInput(InvalidInputKind::IndexOOB { index, max: inode.blocks }));
 		}
 
 		let mut index = index as usize;
@@ -267,7 +267,7 @@ impl INodeTableHandler {
 
 		// This shouldn't happen, as it's covered by the early-out at the start of the function
 		// anyway it means that the index is greater than the maximum number of blocks.
-		Err(FSError::InvalidInput(InvalidInputKind::INodeBlockIndexOOB))
+		Err(FSError::InvalidInput(InvalidInputKind::INodeBlockIndexOOB { index: index as u32, max: INode::MAX_BLOCKS as u32 }))
 	}
 
 

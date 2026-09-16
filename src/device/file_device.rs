@@ -18,7 +18,7 @@ pub struct FileDevice {
 impl BlockDevice for FileDevice {
 	fn read_block(&mut self, block: u32, buf: &mut [u8; BLOCK_SIZE]) -> FSResult<()> {
 		if block >= self.block_count() {
-			return Err(FSError::InvalidInput(InvalidInputKind::BlockIndexOOB));
+			return Err(FSError::InvalidInput(InvalidInputKind::BlockIndexOOB { index: block, max: self.block_count() }));
 		}
 		self.file.seek(SeekFrom::Start(block as u64 * BLOCK_SIZE as u64))?;
 		self.file.read_exact(buf)?;
@@ -26,7 +26,7 @@ impl BlockDevice for FileDevice {
 	}
 	fn write_block(&mut self, block: u32, buf: &[u8; BLOCK_SIZE]) -> FSResult<()> {
 		if block >= self.block_count() {
-			return Err(FSError::InvalidInput(InvalidInputKind::BlockIndexOOB));
+			return Err(FSError::InvalidInput(InvalidInputKind::BlockIndexOOB { index: block, max: self.block_count() }));
 		}
 		self.file.seek(SeekFrom::Start(block as u64 * BLOCK_SIZE as u64))?;
 		self.file.write_all(buf)?;

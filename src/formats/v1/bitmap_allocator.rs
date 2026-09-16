@@ -168,7 +168,7 @@ impl BitmapAllocator {
 				let pos = buf[j].trailing_ones();
 				let index = (j as u32 + i * BLOCK_SIZE as u32) * 8 + pos as u32;
 				if index >= self.max_index {
-					return Err(FSError::StorageFull(StorageFullKind::None)); // Self::ERR_MAPPED_REGION_FULL
+					return Err(FSError::StorageFull { kind: StorageFullKind::None, requested: 1, available: 0 }); // Self::ERR_MAPPED_REGION_FULL
 				}
 
 				buf[j] |= 1 << pos;
@@ -180,7 +180,7 @@ impl BitmapAllocator {
 			}
 		}
 
-		Err(FSError::StorageFull(StorageFullKind::None)) // Self::ERR_BITMAP_FULL
+		Err(FSError::StorageFull { kind: StorageFullKind::None, requested: 1, available: 0 }) // Self::ERR_BITMAP_FULL
 	}
 
 
