@@ -18,6 +18,12 @@ pub struct FFS<D: BlockDevice> {
 
 
 impl<D: BlockDevice> FFS<D> {
+	pub fn format(device: &mut D, version: Version) -> FSResult<()> {
+		match version {
+			Version::V1 => { return FormatV1::format(device); }
+		}
+		Ok(())
+	}
 	pub fn mount(mut device: D) -> FSResult<Self> {
 		let mut buf = [0u8; BLOCK_SIZE];
 		device.read_block(0, &mut buf)?;

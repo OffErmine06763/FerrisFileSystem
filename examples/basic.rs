@@ -1,22 +1,17 @@
 #![allow(dead_code, unused_imports)]
 
-mod ffs;
-mod formats;
-mod fs_utils;
-mod device;
-mod file;
-mod fs_error;
+use FerrisFileSystem::{
+	BlockDevice,
+    CachedDevice,
+    MemoryDevice,
+	Version,
+    FFS,
+	File,
+	FileType,
+	DirectoryContentResult,
+	FSResult,
+};
 
-use fs_utils::*;
-use fs_error::*;
-use ffs::FFS;
-use device::block_device::{self, BlockDevice};
-use device::file_device::FileDevice;
-use device::memory_device::MemoryDevice;
-use device::cached_device::CachedDevice;
-use formats::format::*;
-use file::{File, FileType};
-use formats::v1::format::FormatV1;
 
 use std::io::{self};
 use std::fs;
@@ -24,12 +19,12 @@ use std::path::{Path, PathBuf};
 
 
 fn main() -> FSResult<()> {
-	let path = "../../disks/disk1.img";
+	let path = "disks/disk1.img";
 	let device_size = 100;
 	let cache_size = 50;
 
 	let mut device = CachedDevice::new(MemoryDevice::empty(device_size), cache_size);
-	FormatV1::format(&mut device)?;
+	FFS::format(&mut device, Version::V1)?;
 	let mut ffs = FFS::mount(device)?;
 	
 

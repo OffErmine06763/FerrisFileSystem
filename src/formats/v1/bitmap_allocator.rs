@@ -1,8 +1,6 @@
 use crate::fs_utils::*;
-use crate::block_device::BlockDevice;
+use crate::device::block_device::BlockDevice;
 use crate::fs_error::*;
-
-use std::io;
 
 
 pub struct BitmapAllocator {
