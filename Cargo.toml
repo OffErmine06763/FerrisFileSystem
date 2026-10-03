@@ -3,5 +3,9 @@ name = "FerrisFileSystem"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-fuser = "0.18"
+[features]
+default = []
+fuse = ["dep:fuser"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+fuser = { version = "0.18", optional = true }

@@ -2,7 +2,7 @@ use crate::fs_utils::*;
 use crate::fs_error::*;
 use super::block_device::BlockDevice;
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{File, OpenOptions};
 use std::io::{self, SeekFrom, Seek, Read, Write};
 use std::path::Path;
 
@@ -74,6 +74,8 @@ impl FileDevice {
 
 #[test]
 fn file_device() -> FSResult<()> {
+	use std::fs;
+
 	FileDevice::create_disk_file("test_file_device.img", 2)?;
 	let mut device = FileDevice::from_path("test_file_device.img")?;
 	assert_eq!(device.block_count(), 2);

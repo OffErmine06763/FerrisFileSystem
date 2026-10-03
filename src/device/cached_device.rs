@@ -257,9 +257,7 @@ impl<D: BlockDevice> Drop for CachedDevice<D> {
 
 #[cfg(test)]
 mod tests {
-	use std::{assert_matches, error::Error};
 	use super::*;
-	use crate::device::memory_device::MemoryDevice;
 
 	// Test Cases - Read Sequences:
 	// 1 - sequence of only misses
@@ -278,14 +276,14 @@ mod tests {
 	}
 
 	impl BlockDevice for FakeDevice {
-		fn read_block(&mut self, block: u32, buf: &mut [u8; BLOCK_SIZE]) -> FSResult<()> {
+		fn read_block(&mut self, block: u32, _buf: &mut [u8; BLOCK_SIZE]) -> FSResult<()> {
 			if self.locked {
 				assert!(false, "attempted reading block {}", block)
 			}
 			self.read += 1;
 			Ok(())
 		}
-		fn write_block(&mut self, block: u32, buf: &[u8; BLOCK_SIZE]) -> FSResult<()> {
+		fn write_block(&mut self, block: u32, _buf: &[u8; BLOCK_SIZE]) -> FSResult<()> {
 			if self.locked {
 				assert!(false, "attempted writing block {}", block)
 			}

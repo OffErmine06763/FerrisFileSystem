@@ -4,8 +4,6 @@ use crate::fs_error::*;
 
 use super::inode::*;
 
-use std::io;
-
 
 /// Manages the contents of the whole table of inodes, since it has to deal with sub-block placement
 /// and manages data blocks assigned to inodes, since they require resolution and sub-block placement

@@ -1,9 +1,10 @@
 use crate::fs_utils::*;
 use crate::fs_error::*;
-use crate::device::block_device::{self, BlockDevice};
+use crate::device::block_device::BlockDevice;
 use crate::device::memory_device::MemoryDevice;
 use crate::device::cached_device::CachedDevice;
-use crate::formats::format::*;
+use crate::formats::format::FsFormat;
+use crate::common::*;
 use crate::file::{File, FileType};
 use crate::formats::v1::format::FormatV1;
 
@@ -18,13 +19,11 @@ pub struct FFS<D: BlockDevice> {
 
 
 
-
 impl<D: BlockDevice> FFS<D> {
 	pub fn format(device: &mut D, version: Version) -> FSResult<()> {
 		match version {
 			Version::V1 => { return FormatV1::format(device); }
 		}
-		Ok(())
 	}
 	pub fn mount(mut device: D) -> FSResult<Self> {
 		let mut buf = [0u8; BLOCK_SIZE];

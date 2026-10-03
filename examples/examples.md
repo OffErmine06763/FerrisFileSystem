@@ -6,12 +6,12 @@ Examples of programmatic usage of the filesystem are located under `examples/`.
 
 Run the examples using the standard Rust command
 
-    cargo run -example <example name>
-
-FFS requires a Rust toolchain supporting **Rust Edition 2024**.
+    cargo build --example <example_name>
+    cargo run   --example <example_name>
 
 The currently available examples are
 - `basic`
+- `fuse_demo`
 
 ## Basic Example
 
@@ -27,3 +27,11 @@ The currently available examples are
 10. Runs the integrity checker.
 
 > **Note:** Formatting initializes a new filesystem and overwrites the existing contents of the device.
+
+## FUSE Demo
+
+On LINUX only, with fuse feature enabled.
+
+    cargo run --example fuse_demo --features fuse
+
+Creates a temporary device and mounts it at `/tmp/ffs/` (`mkdir -p /tmp/ffs`)

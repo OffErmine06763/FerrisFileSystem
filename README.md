@@ -29,10 +29,14 @@ The primary objective of FerrisFileSystem is therefore learning, experimentation
 * Filesystem integrity checking.
 * Multiple storage-device backends through a common block-device abstraction.
 * Versioned filesystem-format architecture.
+* OS integration on Linux using FUSE.
 
-## Additional Documentation and Usage Examples
+## Additional Documentation, Programs, and Usage Examples
 
-Additional documentation about the project is located under `docs/` and examples are under [`examples/`](examples/README.md).
+Additional documentation about the project is located under
+- `docs/`: generic codebase documentation
+- [`examples/`](examples/examples.md): examples of the API usage
+- [`bin/`](src/bin/bin.md): for executables documentation
 
 ## Repository Structure
 
@@ -50,10 +54,27 @@ src/
 │   ├── file_device.rs        # storage in an existing file
 │   └── cached_device.rs      # LRU write-back block cache
 │
-└── formats/
-    ├── format.rs             # format independent internal filesystem API
-    │
-    └── v1/                   # on-disk format version 1
-        ├── format.rs
-        └── ...
+├── formats/
+│   ├── format.rs             # format independent internal filesystem API
+│   │
+│   └── v1/                   # on-disk format version 1
+│       ├── format.rs
+│       └── ...
+│   
+└── bin/                      # standalone executables
+
+examples/                     # API usage examples
 ```
+
+## Dependencies
+
+FFS requires a Rust toolchain supporting **Rust Edition 2024**.
+
+### FUSE [optional, Linux only]
+
+Optionally, on Linux it's possible to enable FUSE usage by specifying
+
+    --features fuse
+
+when building/running the examples and bins.  
+This requires fuse installed.

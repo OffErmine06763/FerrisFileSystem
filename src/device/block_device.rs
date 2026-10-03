@@ -1,6 +1,5 @@
 use crate::fs_utils::*;
 use crate::fs_error::*;
-use std::io;
 
 /// Abstracts where the physical storage is (RAM, file).
 /// It is a generic collection of blocks, exposing the operations on them

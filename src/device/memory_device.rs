@@ -2,7 +2,7 @@ use crate::fs_utils::*;
 use crate::fs_error::*;
 use super::block_device::BlockDevice;
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::Path;
 
@@ -82,6 +82,8 @@ impl MemoryDevice {
 
 #[test]
 fn memory_device() -> FSResult<()> {
+	use std::fs;
+
 	let mut device = MemoryDevice::empty(2);
 	assert_eq!(device.block_count(), 2);
 	

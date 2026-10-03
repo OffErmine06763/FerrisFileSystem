@@ -16,3 +16,9 @@ pub fn read_version(buf: &[u8; BLOCK_SIZE]) -> Version {
 		_ => panic!("unsupported filesystem version"),
 	}
 }
+pub fn version_supports_fuse(version: &Version) -> bool {
+	match version {
+		Version::V1 => true,
+		_ => false,
+	}
+}

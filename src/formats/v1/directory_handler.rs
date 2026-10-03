@@ -7,8 +7,7 @@ use super::inode::INode;
 use super::directory::{Directory, DirEntry};
 use super::inode_handler::INodeTableHandler;
 
-use std::io;
-use std::path::{self, Path, Component, PathBuf};
+use std::path::{Path, Component, PathBuf};
 
 
 pub struct ResolutionResult {

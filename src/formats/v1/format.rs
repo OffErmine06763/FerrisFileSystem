@@ -1,8 +1,9 @@
 use crate::fs_utils::*;
 use crate::fs_error::*;
-use crate::formats::format::{self, FsFormat, IntegrityResult, IntegrityError};
+use crate::common::*;
 use crate::file::{File, FileType};
 use crate::device::block_device::BlockDevice;
+use crate::formats::format::FsFormat;
 
 use super::file::FileMetadata;
 use super::inode::INode;
@@ -13,8 +14,8 @@ use super::directory::{Directory, DirEntry};
 use super::directory_handler::DirectoryHandler;
 use super::integrity_checker_errors::*;
 
-use std::io::{self, SeekFrom, Seek, Read, Write};
-use std::path::{self, Path};
+use std::io::SeekFrom;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
 
@@ -638,19 +639,19 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 	}
 
 
-	fn get_directory_content(&mut self, device: &mut D, path: &str) -> FSResult<format::DirectoryContentResult> {
+	fn get_directory_content(&mut self, device: &mut D, path: &str) -> FSResult<DirectoryContentResult> {
 		let dir = self.get_directory(device, path, false)?;
-		let mut entries = Vec::<format::DirectoryContentEntry>::new();
+		let mut entries = Vec::<DirectoryContentEntry>::new();
 		
 		for e in &dir.entries {
 			let conversion = String::from_utf8(e.name[0..e.name_len as usize].to_vec());
 			match conversion {
-				Ok(filename) => entries.push(format::DirectoryContentEntry { filename, file_type: e.file_type }),
+				Ok(filename) => entries.push(DirectoryContentEntry { filename, file_type: e.file_type }),
 				Err(_) => todo!(),
 			}
 		}
 
-		Ok(format::DirectoryContentResult { entries })
+		Ok(DirectoryContentResult { entries })
 	}
 
 

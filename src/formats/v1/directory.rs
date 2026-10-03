@@ -1,8 +1,5 @@
 use crate::fs_utils::*;
-use crate::fs_error::*;
 use crate::file::FileType;
-
-use std::io;
 
 
 // A directory is an inode.
@@ -179,6 +176,8 @@ impl Directory {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use std::io;
+	
 
 	#[test]
 	fn file_entry() -> io::Result<()> {
