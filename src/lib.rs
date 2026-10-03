@@ -4,6 +4,7 @@ mod ffs;
 mod fs_error;
 mod fs_utils;
 mod formats;
+mod fuse;
 
 pub use device::{
 	cached_device::CachedDevice,
@@ -17,3 +18,5 @@ pub use file::{File, FileType};
 pub use ffs::FFS;
 pub use fs_error::{FSError, FSErrorCode, FSResult};
 pub use formats::format::{DirectoryContentResult, DirectoryContentEntry};
+pub use formats::format::FsFormat;
+pub use formats::v1::format::FormatV1;

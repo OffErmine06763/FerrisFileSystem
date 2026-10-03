@@ -17,6 +17,8 @@ pub struct FFS<D: BlockDevice> {
 }
 
 
+
+
 impl<D: BlockDevice> FFS<D> {
 	pub fn format(device: &mut D, version: Version) -> FSResult<()> {
 		match version {
