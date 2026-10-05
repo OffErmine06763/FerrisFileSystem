@@ -34,4 +34,5 @@ On LINUX only, with fuse feature enabled.
 
     cargo run --example fuse_demo --features fuse
 
-Creates a temporary device and mounts it at `/tmp/ffs/` (`mkdir -p /tmp/ffs`)
+Creates a temporary device and mounts it at `/tmp/ffs/` (`mkdir -p /tmp/ffs`).  
+If it's not un-mounted automatically, run `fusermount3 -u /tmp/ffs`

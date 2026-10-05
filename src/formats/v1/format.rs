@@ -14,6 +14,7 @@ use super::directory::{Directory, DirEntry};
 use super::directory_handler::DirectoryHandler;
 use super::integrity_checker_errors::*;
 
+use std::f32::consts::E;
 use std::io::SeekFrom;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1108,6 +1109,20 @@ impl FormatV1 {
 		}
 
 		Ok(())
+	}
+
+
+	
+	pub fn get_inode<D: BlockDevice>(&self, device: &mut D, inode_ind: u32) -> FSResult<INode> {
+		self.inode_handler.read_inode(device, inode_ind)
+	}
+	pub fn get_directory_from_inode<D: BlockDevice>(&self, device: &mut D, inode: &INode, inode_ind: u32) -> FSResult<Directory> {
+		if inode.file_type != FileType::Directory {
+			return Err(FSError::NotADirectory{ path: "unknown".to_string() });
+		}
+
+		let entries = self.directory_handler.get_entries(device, &inode, &self.inode_handler, false)?;
+		Ok(Directory { inode: inode_ind, entries })
 	}
 
 

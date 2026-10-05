@@ -11,6 +11,7 @@ Planned future work includes operating-system integration through **FUSE** and a
 - No OS integration/FUSE support.
 - No journaling or crash recovery.
 - No concurrent filesystem operations.
+- No permissions support
 
 ## Roadmap
 
@@ -25,3 +26,4 @@ Planned future work includes operating-system integration through **FUSE** and a
 - [ ] Improved allocation strategies
 - [ ] Unit/integration test suite
 - [ ] Concurrent access
+- [ ] Permissions

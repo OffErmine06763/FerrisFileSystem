@@ -1,5 +1,3 @@
-
-
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub enum FileType {
 	File,
@@ -10,7 +8,7 @@ pub enum FileType {
 	/// Operations such as open/read/write file should target the file pointed to by the symlink.
 	/// Operations such as delete/rename should target the symlink itself.
 	Symlink,
-	Unknown,
+	Unknown, // TODO: remove, replace with Option<FileType>
 }
 
 

@@ -6,17 +6,22 @@ use crate::fs_error::FSResult;
 
 use std::sync::Mutex;
 
+use fuser::{
+	Errno, FileAttr, FileHandle, FileType, Filesystem, INodeNo, ReplyAttr, ReplyDirectory, ReplyEntry, Request,
+};
+
 
 /// FFS with underlying format compatible with FUSE
 pub struct FuseFFS<D: BlockDevice + Send + 'static> {
     inner: Mutex<FuseFFSInner<D>>,
 }
 
-/// FFS with underlying format compatible with FUSE
-struct FuseFFSInner<D: BlockDevice> {
+/// Synchronous FFS with underlying format compatible with FUSE
+pub struct FuseFFSInner<D: BlockDevice> {
     device: D,
     format: Box<dyn FuseCompatibleFormat<D> + Send>,
 }
+
 
 impl<D: BlockDevice + Send + 'static> FuseFFS<D> {
 	pub fn format(device: &mut D, version: Version) -> FSResult<()> {
@@ -39,13 +44,25 @@ impl<D: BlockDevice + Send + 'static> FuseFFS<D> {
 		Ok(Self { inner: Mutex::new(FuseFFSInner::<D> { device, format }) })
 	}
 
-	pub fn do_sth(&self, path: &str) -> FSResult<()> {
-		let mut inner = self.inner.lock().unwrap();
-        let FuseFFSInner {
-            device,
-            format,
-        } = &mut *inner;
 
-        format.do_sth(device, path)
+
+	pub fn getattr_(&self, req: &Request, ino: INodeNo, fh: Option<FileHandle>, reply: ReplyAttr) {
+		let mut inner = self.inner.lock().unwrap();
+		let FuseFFSInner {
+			device,
+			format,
+		} = &mut *inner;
+
+		format.getattr(device, req, ino, fh, reply);
 	}
+	pub fn readdir_(&self, req: &Request, ino: INodeNo, fh: FileHandle, offset: u64, reply: ReplyDirectory) {
+		let mut inner = self.inner.lock().unwrap();
+		let FuseFFSInner {
+			device,
+			format,
+		} = &mut *inner;
+
+		format.readdir(device, req, ino, fh, offset, reply);
+	}
+
 }
