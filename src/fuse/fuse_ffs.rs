@@ -7,8 +7,13 @@ use crate::fs_error::FSResult;
 use std::sync::Mutex;
 
 use fuser::{
-	Errno, FileAttr, FileHandle, FileType, Filesystem, INodeNo, ReplyAttr, ReplyDirectory, ReplyEntry, Request,
+	Errno, FileAttr, FileHandle, FileType, Filesystem, INodeNo, ReplyAttr, 
+	ReplyDirectory, ReplyEntry, Request, Generation, TimeOrNow, BsdFileFlags,
+	ReplyData
 };
+
+use std::ffi::OsStr;
+use std::time::SystemTime;
 
 
 /// FFS with underlying format compatible with FUSE
@@ -55,6 +60,19 @@ impl<D: BlockDevice + Send + 'static> FuseFFS<D> {
 
 		format.getattr(device, req, ino, fh, reply);
 	}
+	pub fn setattr_(&self, req: &Request, ino: INodeNo, 
+			   mode: Option<u32>, uid: Option<u32>, gid: Option<u32>, size: Option<u64>, 
+			   atime: Option<TimeOrNow>, mtime: Option<TimeOrNow>, ctime: Option<SystemTime>, fh: Option<FileHandle>, 
+			   crtime: Option<SystemTime>, chgtime: Option<SystemTime>, bkuptime: Option<SystemTime>, 
+			   flags: Option<BsdFileFlags>, reply: ReplyAttr) {
+		let mut inner = self.inner.lock().unwrap();
+		let FuseFFSInner {
+			device,
+			format,
+		} = &mut *inner;
+
+		format.setattr(device, req, ino, mode, uid, gid, size, atime, mtime, ctime, fh, crtime, chgtime, bkuptime, flags, reply);
+	}
 	pub fn readdir_(&self, req: &Request, ino: INodeNo, fh: FileHandle, offset: u64, reply: ReplyDirectory) {
 		let mut inner = self.inner.lock().unwrap();
 		let FuseFFSInner {
@@ -63,6 +81,24 @@ impl<D: BlockDevice + Send + 'static> FuseFFS<D> {
 		} = &mut *inner;
 
 		format.readdir(device, req, ino, fh, offset, reply);
+	}
+	pub fn readlink_(&self, req: &Request, ino: INodeNo, reply: ReplyData) {
+		let mut inner = self.inner.lock().unwrap();
+		let FuseFFSInner {
+			device,
+			format,
+		} = &mut *inner;
+
+		format.readlink(device, req, ino, reply);
+	}
+	pub fn lookup_(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
+		let mut inner = self.inner.lock().unwrap();
+		let FuseFFSInner {
+			device,
+			format,
+		} = &mut *inner;
+
+		format.lookup(device, req, parent, name, reply);
 	}
 
 }

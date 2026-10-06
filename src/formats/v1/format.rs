@@ -14,7 +14,6 @@ use super::directory::{Directory, DirEntry};
 use super::directory_handler::DirectoryHandler;
 use super::integrity_checker_errors::*;
 
-use std::f32::consts::E;
 use std::io::SeekFrom;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -365,7 +364,7 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 		Ok(())
 	}
 
-
+	
 
 	fn file_exists(&mut self, device: &mut D, path_str: &str) -> FSResult<(bool, Option<FileType>)> {
 		//! if the file exists, returns true and it's type, otherwise false and None
@@ -595,7 +594,8 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 		Ok(metadata.offset)
 	}
 	fn truncate(&mut self, device: &mut D, file: &File, size: u64) -> FSResult<()> {
-		//! reduces the size of the file. if the file is smaller, nothing happens
+		//! Reduces the size of the file. if the file is smaller, nothing happens
+		//! No block is deallocated!
 
 		if !self.open_files.contains_key(&file.id) {
 			return Err(FSError::FileNotOpen{ file_id: file.id });
@@ -1116,6 +1116,9 @@ impl FormatV1 {
 	pub fn get_inode<D: BlockDevice>(&self, device: &mut D, inode_ind: u32) -> FSResult<INode> {
 		self.inode_handler.read_inode(device, inode_ind)
 	}
+	pub fn write_inode<D: BlockDevice>(&self, device: &mut D, inode_ind: u32, inode: &INode) -> FSResult<()> {
+		self.inode_handler.write_inode(device, inode_ind, inode)
+	}
 	pub fn get_directory_from_inode<D: BlockDevice>(&self, device: &mut D, inode: &INode, inode_ind: u32) -> FSResult<Directory> {
 		if inode.file_type != FileType::Directory {
 			return Err(FSError::NotADirectory{ path: "unknown".to_string() });
@@ -1123,6 +1126,25 @@ impl FormatV1 {
 
 		let entries = self.directory_handler.get_entries(device, &inode, &self.inode_handler, false)?;
 		Ok(Directory { inode: inode_ind, entries })
+	}
+	pub fn get_dir_entry_inode<D: BlockDevice>(&self, device: &mut D, dir_inode_ind: u32, name: &[u8]) -> FSResult<Option<u32>> {
+		let dir_inode = self.inode_handler.read_inode(device, dir_inode_ind)?;
+		let entry = self.directory_handler.find_entry(device, &dir_inode, &self.inode_handler, name)?;
+		Ok(entry.map(|e| e.0.inode))
+	}
+	pub fn read_symlink<D: BlockDevice>(&self, device: &mut D, inode_ind: u32, buf: &mut [u8; BLOCK_SIZE]) -> FSResult<usize> {
+		let inode = self.inode_handler.read_inode(device, inode_ind)?;
+		if inode.file_type != FileType::Symlink {
+			return Err(FSError::NotASymlink{ path: "unknown".to_string() });
+		}
+
+		if inode.size == 0 {
+			return Ok(0);
+		}
+
+		device.read_block(inode.direct[0], buf)?;
+
+		return Ok(inode.size as usize);
 	}
 
 
