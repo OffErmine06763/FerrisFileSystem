@@ -53,13 +53,14 @@ pub enum FSErrorCode {
 	InputINodeBlockIndexOOB		  = Self::generic(26),
 	InputUnknownFileType		  = Self::generic(27),
 	InputNotEnoughAllocatedBlocks = Self::generic(28),
+	InputFileIsSelfOrParent       = Self::generic(29),
 
-	EmptySymlink               = Self::generic(29),
-	MaximumSymlinkDepthReached = Self::generic(30),
+	EmptySymlink               = Self::generic(30),
+	MaximumSymlinkDepthReached = Self::generic(31),
 	
-	DeletingRoot = Self::generic(31),
+	DeletingRoot = Self::generic(32),
 
-	IO = Self::generic(32),
+	IO = Self::generic(33),
 
 	InvalidDirEntry         = Self::corruption(1),
 	ZeroLengthDirEntry      = Self::corruption(2),
@@ -154,6 +155,8 @@ pub enum InvalidInputKind {
 	UnknownFileType, // "invalid file type provided"
 
 	NotEnoughAllocatedBlocks { required: u32, provided: u32 },
+
+	FileIsSelfOrParent,
 }
 
 #[derive(Debug)]
@@ -281,6 +284,7 @@ impl FSError {
 			Self::InvalidInput(InvalidInputKind::INodeBlockIndexOOB { .. })=> FSErrorCode::InputINodeBlockIndexOOB,
 			Self::InvalidInput(InvalidInputKind::UnknownFileType)		   => FSErrorCode::InputUnknownFileType,
 			Self::InvalidInput(InvalidInputKind::NotEnoughAllocatedBlocks { .. }) => FSErrorCode::InputNotEnoughAllocatedBlocks,
+			Self::InvalidInput(InvalidInputKind::FileIsSelfOrParent) => FSErrorCode::InputFileIsSelfOrParent,
 
 			Self::InvalidMagic { .. } => FSErrorCode::InvalidMagic,
 
@@ -349,6 +353,7 @@ impl fmt::Display for FSError {
 			Self::InvalidInput(InvalidInputKind::INodeBlockIndexOOB { index, max }) => write!(f, "invalid input: inode block index {index} is out of bounds (maximum {max})"),
 			Self::InvalidInput(InvalidInputKind::UnknownFileType) => write!(f, "invalid input: unknown file type"),
 			Self::InvalidInput(InvalidInputKind::NotEnoughAllocatedBlocks { required, provided }) => write!(f, "invalid input: not enough allocated blocks: {provided} provided, {required} required"),
+			Self::InvalidInput(InvalidInputKind::FileIsSelfOrParent) => write!(f, "invalid input: provided file is self or parent"),
 
 			Self::InvalidMagic { expected, actual } => write!(f, "invalid filesystem magic number: expected {expected:#010x}, found {actual:#010x}"),
 			Self::IO(err) => write!(f, "I/O error: {err}"),

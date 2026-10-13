@@ -5,7 +5,7 @@ use crate::file::{File, FileType};
 use crate::device::block_device::BlockDevice;
 use crate::formats::format::FsFormat;
 
-use super::file::FileMetadata;
+use super::file::{FileMetadata, OpenFileMode};
 use super::inode::INode;
 use super::superblock::Superblock;
 use super::inode_handler::INodeTableHandler;
@@ -395,7 +395,7 @@ impl<D: BlockDevice> FsFormat<D> for FormatV1 {
 		let id = self.next_file_id;
 		self.next_file_id += 1;
 
-		let metadata = FileMetadata::new(file_inode_ind);
+		let metadata = FileMetadata::new(file_inode_ind, OpenFileMode::ReadWrite);
 		self.open_files.insert(id, metadata);
 
 		Ok(File{ id })
@@ -909,7 +909,277 @@ impl FormatV1 {
 
 		Ok((inode, inode_index))
 	}
+	pub fn create_child<D: BlockDevice>(&mut self, device: &mut D, file_type: FileType, filename: &str, parent_inode_ind: u32) -> FSResult<(INode, u32)> {
+		//! creates an empty directory/file/symlink as children of the given inode
+		//! return: created inode and it's index
+		//! throws: InvalidInput(UnknownFileType), DirectoryDoesNotExist, NotADirectory, AlreadyExists
+		
+		// FIND PARENT
+		let allocated = self.inode_allocator.is_allocated(device, parent_inode_ind)?;
+		if !allocated {
+			return Err(FSError::DirectoryDoesNotExist { path: parent_inode_ind.to_string() })
+		}
+		let mut parent_inode = self.inode_handler.read_inode(device, parent_inode_ind)?;
+		if parent_inode.file_type != FileType::Directory {
+			return Err(FSError::NotADirectory { path: parent_inode_ind.to_string() });
+		}
+		
+		// CREATE NEW ENTRY AND CHECK NAME COLLISION
+		let mut entry = DirEntry::new(INVALID_ADDRESS, file_type.clone(), filename);
+		let exists = self.directory_handler.find_entry(device, &parent_inode, &self.inode_handler, &entry.name.as_slice())?;
+		if exists.is_some() {
+			return Err(FSError::AlreadyExists{ path: exists.unwrap().0.inode.to_string() });
+		}
 
+
+		// ALLOCATE BLOCKS
+		let inodes_to_alloc = 1;
+		let file_blocks = match file_type {
+			FileType::Directory => 1,
+			FileType::File      => 0,
+			FileType::Symlink   => 1,
+			FileType::Unknown   => panic!(),
+		};
+		let fit_result = self.directory_handler.can_fit(device, &parent_inode, &self.inode_handler, &entry)?;
+		let data_to_alloc;
+		if fit_result != None {
+			data_to_alloc = file_blocks;
+		} else {
+			let count = self.inode_handler.blocks_necessary_to_grow(&parent_inode);
+			data_to_alloc = file_blocks + 1 + count;
+		}
+		let (allocated_inodes, allocated_data) = self.allocate(device, inodes_to_alloc, data_to_alloc)?;
+
+		let inode_index = allocated_inodes[0];
+		let mut alloc_data_index = 0;
+		
+
+		// CREATE INODE
+		let now: u64 = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+		let mut inode = INode::empty(file_type, u16::MAX, now);
+		entry.inode = inode_index;
+
+		if file_type == FileType::Directory || file_type == FileType::Symlink {
+			self.inode_handler.add_block(device, &mut inode, allocated_data[alloc_data_index], &vec![])?;
+			alloc_data_index += 1;
+		}
+		inode.size = match file_type {
+			FileType::Directory => BLOCK_SIZE as u64 * inode.blocks as u64,
+			FileType::File      => 0,
+			FileType::Symlink   => 0,
+			FileType::Unknown   => panic!(),
+		};
+
+
+		// WRITE INODE AND FILE CONTENTS
+		self.inode_handler.write_inode(device, inode_index, &inode)?;
+		if file_type == FileType::Directory {
+			let new_dir = Directory::new(inode_index, parent_inode_ind);
+			self.directory_handler.write_directory_with_inode(device, &new_dir, &inode, &self.inode_handler)?;
+		}
+
+
+		// WRITE DIRECTORY ENTRY
+		let entry_block;
+		let entry_offset;
+
+		if fit_result == None {
+			entry_block = allocated_data[alloc_data_index];
+			alloc_data_index += 1;
+			entry_offset = 0;
+
+			let count = self.inode_handler.blocks_necessary_to_grow(&parent_inode);
+			let mut pool = Vec::<u32>::new();
+			for _ in 0..count as usize {
+				pool.push(allocated_data[alloc_data_index]);
+				alloc_data_index += 1;
+			}
+			self.inode_handler.add_block(device, &mut parent_inode, entry_block, &pool)?;
+
+			self.directory_handler.add_entry_grow(device, &parent_inode, &mut entry, entry_block)?;
+			parent_inode.size += BLOCK_SIZE as u64;
+		}
+		else {
+			(entry_block, entry_offset) = fit_result.unwrap();
+			self.directory_handler.add_entry_here(device, &parent_inode, &mut entry, entry_block, entry_offset)?;
+		}
+
+
+		// UPDATE PARENT INODE
+		parent_inode.modified = now;
+		self.inode_handler.write_inode(device, parent_inode_ind, &parent_inode)?;
+
+		Ok((inode, inode_index))
+	}
+	pub fn delete_child<D: BlockDevice>(&mut self, device: &mut D, filename: &str, parent_inode_ind: u32, file_type: Option<FileType>) -> FSResult<()> {
+		//! deletes a directory/file/symlink as children of the given inode
+		//! throws: InvalidInput(UnknownFileType), NotADirectory, NotAFile, NotASymlink, DoesNotExist
+		
+		if filename == "." || filename == ".." {
+			return Err(FSError::InvalidInput(InvalidInputKind::FileIsSelfOrParent));
+		}
+
+		// FIND PARENT
+		let allocated = self.inode_allocator.is_allocated(device, parent_inode_ind)?;
+		if !allocated {
+			return Err(FSError::DirectoryDoesNotExist { path: parent_inode_ind.to_string() })
+		}
+		let mut parent_inode = self.inode_handler.read_inode(device, parent_inode_ind)?;
+		if parent_inode.file_type != FileType::Directory {
+			return Err(FSError::NotADirectory { path: parent_inode_ind.to_string() });
+		}
+
+		let exists = self.directory_handler.find_entry(device, &parent_inode, &self.inode_handler, &filename.as_bytes())?;
+		if exists.is_none() {
+			return Err(FSError::DoesNotExist { path: parent_inode_ind.to_string() });
+		}
+		let (dir_entry, entry_block_ind, entry_offset) = exists.unwrap();
+		let file_inode_ind = dir_entry.inode;
+		let mut file_inode = self.inode_handler.read_inode(device, dir_entry.inode)?;
+
+		if let Some(file_type) = file_type {
+			if file_type != file_inode.file_type {
+				match file_type {
+					FileType::Directory => return Err(FSError::NotADirectory { path: parent_inode_ind.to_string() }),
+					FileType::File => return Err(FSError::NotAFile { path: parent_inode_ind.to_string() }),
+					FileType::Symlink => return Err(FSError::NotASymlink { path: parent_inode_ind.to_string() }),
+					FileType::Unknown => return Err(FSError::InvalidInput(InvalidInputKind::UnknownFileType)),
+				}
+			}
+		}
+		
+		if file_inode.file_type == FileType::Directory {
+			let mut empty = true;
+
+			self.directory_handler.iterate(device, &file_inode, &self.inode_handler, |entry: DirEntry, _block: u32, _offset: usize| -> bool {
+				if entry.is_free() { return false; }
+				
+				if (entry.name_len > 2) || (entry.name[0] != b'.') || (entry.name_len == 2 && entry.name[1] != b'.')
+				{
+					empty = false;
+					return true;
+				}
+
+				return false;
+			})?;
+
+			if !empty {
+				return Err(FSError::DirectoryNotEmpty { path: parent_inode_ind.to_string() });
+			}
+		}
+
+
+		// DELETE
+		let deleted: bool;
+		if file_inode.links > 1 {
+			// if the file has multiple links, just decrement the counter
+			// this _should_ happen only for FileType::File, but we can keep this very generic
+			file_inode.links -= 1;
+			self.inode_handler.write_inode(device, file_inode_ind, &file_inode)?;
+			deleted = false;
+		}
+		else {
+			// collect the blocks to dealloc
+			let mut data_to_dealloc = Vec::<u32>::new();
+			let mut inodes_to_dealloc = Vec::<u32>::new();
+
+			data_to_dealloc.reserve(file_inode.blocks as usize);
+			for i in 0..file_inode.blocks {
+				let block = self.inode_handler.get_block(device, &file_inode, i)?;
+				data_to_dealloc.push(block);
+			}
+
+			inodes_to_dealloc.push(file_inode_ind);
+
+			// do dealloc
+			self.block_allocator.deallocate(device, &data_to_dealloc)?;
+			self.inode_allocator.deallocate(device, &inodes_to_dealloc)?;
+
+			// update superblock metadata
+			self.superblock.free_data += data_to_dealloc.len() as u32;
+			self.superblock.free_inodes += inodes_to_dealloc.len() as u32;
+			let mut buf = [0u8; BLOCK_SIZE];
+			self.superblock.serialize(&mut buf);
+			device.write_block(0, &buf)?;
+
+			deleted = true;
+		}
+
+		// FREE THE DIRECTORY ENTRY
+		// do not bother deallocating the block if all free
+		let freed = self.directory_handler.free_region(device, &parent_inode, entry_block_ind, entry_offset as u16)?;
+
+
+		// MODIFY THE PARENT TIMESTAMP
+		let now: u64 = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+		parent_inode.modified = now;
+		self.inode_handler.write_inode(device, parent_inode_ind, &parent_inode)?;
+
+		Ok(())
+	}
+
+	pub fn create_child_hardlink<D: BlockDevice>(&mut self, device: &mut D, inode: &mut INode, inode_ind: u32, dst: &str, dst_parent_inode: &mut INode, dst_parent_inode_ind: u32) -> FSResult<()> {
+		let dst_path = Path::new(dst);
+		let dst_parent = dst_path.parent().unwrap(); // TODO: handle ill formatted paths
+		let dst_filename = dst_path.file_name().unwrap().to_str().unwrap();
+
+		// CREATE NEW ENTRY AND CHECK NAME COLLISION
+		let mut dst_entry = DirEntry::new(inode_ind, FileType::File, dst_filename);
+		let exists = self.directory_handler.find_entry(device, dst_parent_inode, &self.inode_handler, &dst_entry.name.as_slice())?;
+		if exists.is_some() {
+			return Err(FSError::AlreadyExists{ path: dst.to_string() });
+		}
+
+
+		// ALLOCATE BLOCKS
+		let fit_result = self.directory_handler.can_fit(device, &dst_parent_inode, &self.inode_handler, &dst_entry)?;
+		let data_to_alloc;
+		if fit_result != None { 
+			data_to_alloc = 0;
+		} else {
+			// allocate the block for the new entry and the blocks necessary for the directory inode indirect/double indirect
+			let count = self.inode_handler.blocks_necessary_to_grow(&dst_parent_inode);
+			data_to_alloc = 1 + count;
+		};
+		let (_, allocated_data) = self.allocate(device, 0, data_to_alloc)?;
+
+		
+		// WRITE DIRECTORY ENTRY
+		let dst_entry_block;
+		let dst_entry_offset;
+
+		if fit_result == None {
+			dst_entry_block = allocated_data[0];
+			dst_entry_offset = 0;
+
+			let count = self.inode_handler.blocks_necessary_to_grow(&dst_parent_inode);
+			let mut pool = Vec::<u32>::new();
+			for i in 0..count as usize {
+				pool.push(allocated_data[1 + i]);
+			}
+			self.inode_handler.add_block(device, dst_parent_inode, dst_entry_block, &pool)?;
+
+			self.directory_handler.add_entry_grow(device, dst_parent_inode, &mut dst_entry, dst_entry_block)?;
+			dst_parent_inode.size += BLOCK_SIZE as u64;
+		}
+		else {
+			(dst_entry_block, dst_entry_offset) = fit_result.unwrap();
+			self.directory_handler.add_entry_here(device, dst_parent_inode, &mut dst_entry, dst_entry_block, dst_entry_offset)?;
+		}
+
+
+		// UPDATE INODE
+		inode.links += 1;
+		self.inode_handler.write_inode(device, inode_ind, &inode)?;
+
+
+		// UPDATE PARENT INODE
+		let now: u64 = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+		dst_parent_inode.modified = now;
+		self.inode_handler.write_inode(device, dst_parent_inode_ind, &dst_parent_inode)?;
+
+		Ok(())
+	}
 
 
 	fn allocate<D: BlockDevice>(&mut self, device: &mut D, inodes: u32, data: u32) -> FSResult<(Vec<u32>, Vec<u32>)> {
@@ -951,7 +1221,7 @@ impl FormatV1 {
 
 
 
-	fn write_symlink<D: BlockDevice>(&mut self, device: &mut D, inode: &mut INode, index: u32, path_tgt: &str) -> FSResult<()> {
+	pub fn write_symlink<D: BlockDevice>(&mut self, device: &mut D, inode: &mut INode, index: u32, path_tgt: &str) -> FSResult<()> {
 		//! overwrites the contents of the symlink, without zeroing the old content.
 		//! note: assumes the inode to be of a symlink
 		let data_block = self.superblock.data_start + inode.direct[0];
@@ -1114,9 +1384,17 @@ impl FormatV1 {
 
 	
 	pub fn get_inode<D: BlockDevice>(&self, device: &mut D, inode_ind: u32) -> FSResult<INode> {
+		let allocated = self.inode_allocator.is_allocated(device, inode_ind)?;
+		if !allocated {
+			return Err(FSError::DoesNotExist { path: inode_ind.to_string() })
+		}
 		self.inode_handler.read_inode(device, inode_ind)
 	}
 	pub fn write_inode<D: BlockDevice>(&self, device: &mut D, inode_ind: u32, inode: &INode) -> FSResult<()> {
+		let allocated = self.inode_allocator.is_allocated(device, inode_ind)?;
+		if !allocated {
+			return Err(FSError::DoesNotExist { path: inode_ind.to_string() })
+		}
 		self.inode_handler.write_inode(device, inode_ind, inode)
 	}
 	pub fn get_directory_from_inode<D: BlockDevice>(&self, device: &mut D, inode: &INode, inode_ind: u32) -> FSResult<Directory> {
@@ -1128,14 +1406,22 @@ impl FormatV1 {
 		Ok(Directory { inode: inode_ind, entries })
 	}
 	pub fn get_dir_entry_inode<D: BlockDevice>(&self, device: &mut D, dir_inode_ind: u32, name: &[u8]) -> FSResult<Option<u32>> {
+		let allocated = self.inode_allocator.is_allocated(device, dir_inode_ind)?;
+		if !allocated {
+			return Err(FSError::DoesNotExist { path: dir_inode_ind.to_string() })
+		}
 		let dir_inode = self.inode_handler.read_inode(device, dir_inode_ind)?;
 		let entry = self.directory_handler.find_entry(device, &dir_inode, &self.inode_handler, name)?;
 		Ok(entry.map(|e| e.0.inode))
 	}
 	pub fn read_symlink<D: BlockDevice>(&self, device: &mut D, inode_ind: u32, buf: &mut [u8; BLOCK_SIZE]) -> FSResult<usize> {
+		let allocated = self.inode_allocator.is_allocated(device, inode_ind)?;
+		if !allocated {
+			return Err(FSError::DoesNotExist { path: inode_ind.to_string() })
+		}
 		let inode = self.inode_handler.read_inode(device, inode_ind)?;
 		if inode.file_type != FileType::Symlink {
-			return Err(FSError::NotASymlink{ path: "unknown".to_string() });
+			return Err(FSError::NotASymlink{ path: inode_ind.to_string() });
 		}
 
 		if inode.size == 0 {
@@ -1146,7 +1432,25 @@ impl FormatV1 {
 
 		return Ok(inode.size as usize);
 	}
+	pub fn open_file_from_inode<D: BlockDevice>(&mut self, device: &mut D, file_inode_ind: u32) -> FSResult<File> {
+		let allocated = self.inode_allocator.is_allocated(device, file_inode_ind)?;
+		if !allocated {
+			return Err(FSError::DoesNotExist { path: file_inode_ind.to_string() })
+		}
+		let file_inode = self.inode_handler.read_inode(device, file_inode_ind)?;
+		if file_inode.file_type != FileType::File {
+			return Err(FSError::NotAFile{ path: file_inode_ind.to_string() });
+		}
 
+		// CREATE HANDLE AND METADATA
+		let id = self.next_file_id;
+		self.next_file_id += 1;
+
+		let metadata = FileMetadata::new(file_inode_ind, OpenFileMode::ReadWrite);
+		self.open_files.insert(id, metadata);
+
+		Ok(File{ id })
+	}
 
 
 	fn check_integrity_recursive<D: BlockDevice>

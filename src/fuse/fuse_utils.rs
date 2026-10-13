@@ -1,7 +1,7 @@
 use crate::file;
 
 use fuser::{
-	self, Errno, FileAttr, FileHandle, Filesystem, INodeNo, ReplyAttr, ReplyDirectory, ReplyEntry, Request,
+	self,
 };
 
 pub fn my_to_fuse_file_type(file_type: &file::FileType) -> fuser::FileType {
