@@ -12,6 +12,7 @@ use fuser::{
 	Errno, FileAttr, FileHandle, FileType, Filesystem, INodeNo, ReplyAttr, LockOwner,
 	ReplyDirectory, ReplyEntry, Request, Generation, TimeOrNow, BsdFileFlags, WriteFlags,
 	ReplyData, ReplyOpen, ReplyEmpty, OpenFlags, AccessFlags, FopenFlags, ReplyWrite,
+	KernelConfig, ReplyStatfs, RenameFlags, ReplyCreate,
 };
 
 use std::{
@@ -59,7 +60,7 @@ fn file_attr_from_inode(inode: &INode, ino: INodeNo) -> FileAttr {
 
 /// Implementation of fuse functions for format v1
 impl<D: BlockDevice> FuseCompatibleFormat<D> for FormatV1 {
-	fn getattr(&self, device: &mut D, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
+	fn getattr(&mut self, device: &mut D, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
         let inode_res = self.get_inode(device, to_v1_inode_number(ino));
 		if inode_res.is_err() {
 			println!("V1 - getattr - no inode");
@@ -72,7 +73,7 @@ impl<D: BlockDevice> FuseCompatibleFormat<D> for FormatV1 {
 		reply.attr(&TTL, &attr);
 	}
 
-	fn setattr(&self, device: &mut D, _req: &Request, ino: INodeNo, 
+	fn setattr(&mut self, device: &mut D, _req: &Request, ino: INodeNo, 
 			   mode: Option<u32>, _uid: Option<u32>, _gid: Option<u32>, size: Option<u64>, 
 			   _atime: Option<TimeOrNow>, mtime: Option<TimeOrNow>, ctime: Option<SystemTime>, _fh: Option<FileHandle>, 
 			   _crtime: Option<SystemTime>, _chgtime: Option<SystemTime>, _bkuptime: Option<SystemTime>, 
@@ -124,7 +125,7 @@ impl<D: BlockDevice> FuseCompatibleFormat<D> for FormatV1 {
 		reply.attr(&TTL, &attr);
 	}
 	
-	fn opendir(&self, device: &mut D, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
+	fn opendir(&mut self, device: &mut D, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
 		let inode_ind = to_v1_inode_number(ino);
 
         let inode_res = self.get_inode(device, inode_ind);
@@ -146,7 +147,7 @@ impl<D: BlockDevice> FuseCompatibleFormat<D> for FormatV1 {
 		reply.opened(FileHandle(inode_ind as u64), FopenFlags::empty());
 	}
 
-	fn readdir(&self, device: &mut D, _req: &Request, ino: INodeNo, _fh: FileHandle, offset: u64, mut reply: ReplyDirectory) {
+	fn readdir(&mut self, device: &mut D, _req: &Request, ino: INodeNo, _fh: FileHandle, offset: u64, mut reply: ReplyDirectory) {
 		let inode_ind = to_v1_inode_number(ino);
 
         let inode_res = self.get_inode(device, inode_ind);
@@ -211,7 +212,7 @@ impl<D: BlockDevice> FuseCompatibleFormat<D> for FormatV1 {
 		reply.entry(&TTL, &attr, Generation(0));
 	}
 
-	fn lookup(&self, device: &mut D, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
+	fn lookup(&mut self, device: &mut D, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
 		let parent_inode_ind = to_v1_inode_number(parent);
 
 		let entry_inode_ind_res = self.get_dir_entry_inode(device, parent_inode_ind, name.as_bytes());
@@ -262,7 +263,24 @@ impl<D: BlockDevice> FuseCompatibleFormat<D> for FormatV1 {
 		reply.ok();
 	}
 
-	fn readlink(&self, device: &mut D, _req: &Request, ino: INodeNo, reply: ReplyData) {
+	fn fsyncdir(&mut self, device: &mut D, req: &Request, ino: INodeNo, fh: FileHandle, datasync: bool, reply: ReplyEmpty) {
+		// We currently don't have a way to sync only the data relative to a given file/directory, so flush everything
+		let res = FsFormat::<D>::flush(self, device);
+		if res.is_err() {
+			println!("V1 - fsyncdir - failed to sync device");
+			reply.error(Errno::EIO);
+			return;
+		}
+
+		reply.ok();
+	}
+
+	fn releasedir(&mut self, _device: &mut D, _req: &Request, _ino: INodeNo, _fh: FileHandle, _flags: OpenFlags, reply: ReplyEmpty) {
+		// no temporary per-open state
+		reply.ok();
+	}
+
+	fn readlink(&mut self, device: &mut D, _req: &Request, ino: INodeNo, reply: ReplyData) {
 		let inode_ind = to_v1_inode_number(ino);
 		
 		let mut buf = [0u8; BLOCK_SIZE];
@@ -311,7 +329,7 @@ impl<D: BlockDevice> FuseCompatibleFormat<D> for FormatV1 {
 		reply.entry(&TTL, &attr, Generation(0));
 	}
 
-	fn access(&self, _device: &mut D, _req: &Request, _ino: INodeNo, _mask: AccessFlags, reply: ReplyEmpty) {
+	fn access(&mut self, _device: &mut D, _req: &Request, _ino: INodeNo, _mask: AccessFlags, reply: ReplyEmpty) {
 		// permissions not implemented, every access is allowed
 		reply.ok();
 	}
@@ -365,7 +383,7 @@ impl<D: BlockDevice> FuseCompatibleFormat<D> for FormatV1 {
 
 		let delete_res = self.delete_child(device, name_str, parent_inode_ind, Some(file::FileType::File));
 		if delete_res.is_err() {
-			println!("V1 - unlink - failed deleting directory"); // TODO: check the actual error and reply with the correct Errno
+			println!("V1 - unlink - failed unlinking"); // TODO: check the actual error and reply with the correct Errno
 			reply.error(Errno::EIO);
 			return;
 		}
@@ -413,6 +431,155 @@ impl<D: BlockDevice> FuseCompatibleFormat<D> for FormatV1 {
 
 		let attr = file_attr_from_inode(&tgt_inode, ino);
 		reply.entry(&TTL, &attr, Generation(0));		
+	}
+
+	fn rename(&mut self, device: &mut D, req: &Request, parent: INodeNo, name: &OsStr, newparent: INodeNo, newname: &OsStr, flags: RenameFlags, reply: ReplyEmpty) {
+		if flags == RenameFlags::RENAME_EXCHANGE {
+			println!("V1 - rename - swapping files is an unsupported operation");
+			reply.error(Errno::EINVAL);
+			return;
+		}
+		if flags != RenameFlags::RENAME_NOREPLACE {
+			println!("V1 - rename - overwriting files is an unsupported operation");
+			reply.error(Errno::EINVAL);
+			return;
+		}
+		
+		// TODO: this should fail if moving a directory inside one of its sub-directories.
+
+		let src_parent_inode_ind = to_v1_inode_number(parent);
+		let dst_parent_inode_ind = to_v1_inode_number(newparent);
+		let src_inode_ind;
+
+		// Get the source inode
+		{
+			let entry_inode_ind_res = self.get_dir_entry_inode(device, src_parent_inode_ind, name.as_bytes());
+			if entry_inode_ind_res.is_err() {
+				println!("V1 - rename - failed to read source directory");
+				reply.error(Errno::ENOENT); // TODO: check error codes
+				return;
+			}
+
+			let entry_inode_ind_opt = entry_inode_ind_res.unwrap();
+			if entry_inode_ind_opt.is_none() {
+				println!("V1 - rename - source directory entry not found");
+				reply.error(Errno::ENOENT); // TODO: check error codes
+				return;
+			}
+
+			src_inode_ind = entry_inode_ind_opt.unwrap();
+		}
+		
+		// create a hard link in the new location
+		{
+			let src_inode_res = self.get_inode(device, src_inode_ind);
+			if src_inode_res.is_err() {
+				println!("V1 - rename - source file does not exist");
+				reply.error(Errno::ENOENT);
+				return;
+			}
+			let mut src_inode = src_inode_res.unwrap();
+
+			let dst_parent_inode_res = self.get_inode(device, dst_parent_inode_ind);
+			if dst_parent_inode_res.is_err() {
+				println!("V1 - rename - destination directory does not exist");
+				reply.error(Errno::ENOENT);
+				return;
+			}
+			let mut dst_parent_inode = dst_parent_inode_res.unwrap();
+			if dst_parent_inode.file_type != file::FileType::Directory {
+				println!("V1 - rename - destination parent is not a directory");
+				reply.error(Errno::ENOTDIR);
+				return;
+			}
+
+			let res = self.create_child_hardlink(device, &mut src_inode, src_inode_ind, newname.to_str().unwrap(), &mut dst_parent_inode, dst_parent_inode_ind);
+			if res.is_err() {
+				println!("V1 - rename - failed to create hardlink");
+				reply.error(Errno::EIO);
+				return;
+			}
+		}
+
+		// TODO: if unlink fail, should undo the creation of the new link.
+		// unlink from the previous location
+		{
+			let name_str = name.to_str();
+			if name_str.is_none() {
+				println!("V1 - rename - source node name invalid");
+				reply.error(Errno::EIO);
+				return;
+			}
+			let name_str = name_str.unwrap();
+
+			let delete_res = self.delete_child(device, name_str, src_parent_inode_ind, None);
+			if delete_res.is_err() {
+				println!("V1 - rename - failed unlinking source"); // TODO: check the actual error and reply with the correct Errno
+				reply.error(Errno::EIO);
+				return;
+			}
+		}
+		
+		reply.ok();
+	}
+
+	fn create(&mut self, device: &mut D, req: &Request, parent: INodeNo, name: &OsStr, mode: u32, umask: u32, flags: i32, reply: ReplyCreate) {
+		let inode_ind;
+		let attr;
+
+		// create the file
+		{
+			let parent_inode_ind = to_v1_inode_number(parent);
+			
+			let name_str = name.to_str();
+			if name_str.is_none() {
+				println!("V1 - create - node name invalid");
+				reply.error(Errno::EIO);
+				return;
+			}
+			let name_str = name_str.unwrap();
+
+			let file_type = mode & libc::S_IFMT;
+			if file_type != libc::S_IFREG {
+				println!("V1 - create - attempted creating unsupported file type");
+				reply.error(Errno::ENOSYS);
+				return;
+			}
+
+			let permissions = (mode & 0o7777) & !umask; // TODO: use those permissions
+			let file_type = file::FileType::File;
+
+			let create_res = self.create_child(device, file_type, name_str, parent_inode_ind);
+			if create_res.is_err() {
+				println!("V1 - create - failed creating node"); // TODO: check the actual error and reply with the correct Errno
+				reply.error(Errno::EIO);
+				return;
+			}
+			
+			let created = create_res.unwrap();
+			let inode = created.0;
+			inode_ind = created.1;
+			let entry_ino = from_v1_inode_number(inode_ind);
+			attr = file_attr_from_inode(&inode, entry_ino);
+		}
+
+		let fh;
+
+		// open the file
+		{
+			let open_res = self.open_file_from_inode(device, inode_ind);
+			if open_res.is_err() {
+				println!("V1 - create - failed to open file");
+				reply.error(Errno::ENOENT);
+				return;
+			}
+			let opened = open_res.unwrap();
+
+			// files do have a per-open state, here we just have to convert our handle to fuser one.
+			fh = FileHandle(opened.id as u64);
+		}
+
+		reply.created(&TTL, &attr, Generation(0), fh, FopenFlags::empty());
 	}
 
 	fn open(&mut self, device: &mut D, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
@@ -470,5 +637,33 @@ impl<D: BlockDevice> FuseCompatibleFormat<D> for FormatV1 {
 
 		let wrote = write_res.unwrap();
 		reply.written(wrote as u32);
+	}
+
+	fn flush(&mut self, _device: &mut D, _req: &Request, _ino: INodeNo, _fh: FileHandle, _lock_owner: LockOwner, reply: ReplyEmpty) {
+		// We don't have write buffers, so this will always succeed
+		reply.ok();
+	}
+
+	fn release(&mut self, device: &mut D, _req: &Request, _ino: INodeNo, fh: FileHandle, _flags: OpenFlags, _lock_owner: Option<LockOwner>, _flush: bool, reply: ReplyEmpty) {
+		let file = file::File{ id: fh.0 as u32 };
+		let res = self.close_file(device, &file);
+		if res.is_err() {
+			println!("V1 - release - failed to close file");
+			reply.error(Errno::EIO);
+			return;
+		}
+		reply.ok();
+	}
+
+	fn fsync(&mut self, device: &mut D, _req: &Request, _ino: INodeNo, fh: FileHandle, _datasync: bool, reply: ReplyEmpty) {
+		// We currently don't have a way to sync only the data relative to a given file/directory, so flush everything
+		let res = FsFormat::<D>::flush(self, device);
+		if res.is_err() {
+			println!("V1 - fsync - failed to sync device");
+			reply.error(Errno::EIO);
+			return;
+		}
+
+		reply.ok();
 	}
 }

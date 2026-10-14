@@ -12,11 +12,13 @@ use fuser::{
 	Errno, FileAttr, FileHandle, FileType, Filesystem, INodeNo, ReplyAttr, LockOwner, 
 	ReplyDirectory, ReplyEntry, Request, Generation, TimeOrNow, BsdFileFlags, WriteFlags,
 	ReplyData, ReplyOpen, ReplyEmpty, OpenFlags, AccessFlags, FopenFlags, ReplyWrite,
+	KernelConfig, ReplyStatfs, RenameFlags, ReplyCreate,
 };
 
 use std::ffi::OsStr;
 use std::time::SystemTime;
 use std::path::Path;
+use std::io;
 
 
 /// FFS with underlying format compatible with FUSE
@@ -51,8 +53,18 @@ impl<D: BlockDevice + Send + 'static> FuseFFS<D> {
 
 		Ok(Self { inner: Mutex::new(FuseFFSInner::<D> { device, format }) })
 	}
+	
+	
 
+	pub fn init_(&mut self, req: &Request, config: &mut KernelConfig) -> io::Result<()> {
+		Ok(())		
+	}
+	pub fn destroy_(&mut self) {
 
+	}
+	pub fn statfs_(&self, req: &Request, ino: INodeNo, reply: ReplyStatfs) {
+	
+	}
 
 	pub fn getattr_(&self, req: &Request, ino: INodeNo, fh: Option<FileHandle>, reply: ReplyAttr) {
 		let mut inner = self.inner.lock().unwrap();
@@ -121,6 +133,24 @@ impl<D: BlockDevice + Send + 'static> FuseFFS<D> {
 
 		format.rmdir(device, req, parent, name, reply);
 	}
+	pub fn fsyncdir_(&self, req: &Request, ino: INodeNo, fh: FileHandle, datasync: bool, reply: ReplyEmpty) {
+		let mut inner = self.inner.lock().unwrap();
+		let FuseFFSInner {
+			device,
+			format,
+		} = &mut *inner;
+
+		format.fsyncdir(device, req, ino, fh, datasync, reply);
+	}
+	pub fn releasedir_(&self, req: &Request, ino: INodeNo, fh: FileHandle, flags: OpenFlags, reply: ReplyEmpty) {
+		let mut inner = self.inner.lock().unwrap();
+		let FuseFFSInner {
+			device,
+			format,
+		} = &mut *inner;
+
+		format.releasedir(device, req, ino, fh, flags, reply);
+	}
 	pub fn readlink_(&self, req: &Request, ino: INodeNo, reply: ReplyData) {
 		let mut inner = self.inner.lock().unwrap();
 		let FuseFFSInner {
@@ -175,6 +205,24 @@ impl<D: BlockDevice + Send + 'static> FuseFFS<D> {
 
 		format.link(device, req, ino, newparent, newname, reply);
 	}
+	pub fn rename_(&self, req: &Request, parent: INodeNo, name: &OsStr, newparent: INodeNo, newname: &OsStr, flags: RenameFlags, reply: ReplyEmpty) {
+		let mut inner = self.inner.lock().unwrap();
+		let FuseFFSInner {
+			device,
+			format,
+		} = &mut *inner;
+
+		format.rename(device, req, parent, name, newparent, newname, flags, reply);
+	}
+	pub fn create_(&self, req: &Request, parent: INodeNo, name: &OsStr, mode: u32, umask: u32, flags: i32, reply: ReplyCreate) {
+		let mut inner = self.inner.lock().unwrap();
+		let FuseFFSInner {
+			device,
+			format,
+		} = &mut *inner;
+
+		format.create(device, req, parent, name, mode, umask, flags, reply);
+	}
 	pub fn open_(&self, req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
 		let mut inner = self.inner.lock().unwrap();
 		let FuseFFSInner {
@@ -201,5 +249,32 @@ impl<D: BlockDevice + Send + 'static> FuseFFS<D> {
 		} = &mut *inner;
 
 		format.write(device, req, ino, fh, offset, data, write_flags, flags, lock_owner, reply);
+	}
+	pub fn flush_(&self, req: &Request, ino: INodeNo, fh: FileHandle, lock_owner: LockOwner, reply: ReplyEmpty) {
+		let mut inner = self.inner.lock().unwrap();
+		let FuseFFSInner {
+			device,
+			format,
+		} = &mut *inner;
+
+		format.flush(device, req, ino, fh, lock_owner, reply);
+	}
+	pub fn release_(&self, req: &Request, ino: INodeNo, fh: FileHandle, flags: OpenFlags, lock_owner: Option<LockOwner>, flush: bool, reply: ReplyEmpty) {
+		let mut inner = self.inner.lock().unwrap();
+		let FuseFFSInner {
+			device,
+			format,
+		} = &mut *inner;
+
+		format.release(device, req, ino, fh, flags, lock_owner, flush, reply);
+	}
+	pub fn fsync_(&self, req: &Request, ino: INodeNo, fh: FileHandle, datasync: bool, reply: ReplyEmpty) {
+		let mut inner = self.inner.lock().unwrap();
+		let FuseFFSInner {
+			device,
+			format,
+		} = &mut *inner;
+
+		format.fsync(device, req, ino, fh, datasync, reply);
 	}
 }

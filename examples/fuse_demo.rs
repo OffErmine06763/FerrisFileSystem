@@ -2,10 +2,18 @@
 use fuser::{mount, MountOption, Config};
 #[cfg(feature = "fuse")]
 use FerrisFileSystem::{FSResult, FormatV1, MemoryDevice, FuseFFS};
+#[cfg(feature = "fuse")]
+use std::env;
 
 
 #[cfg(feature = "fuse")]
 fn main() -> FSResult<()>  {
+	let args: Vec<String> = env::args().collect();
+	if args.len() == 0 {
+		println!("Provide the mount point as first command line argument");
+		return Ok(());
+	}
+
 	// Initialize temporary device
 	let device_size = 100;
 	let mut device = MemoryDevice::empty(device_size);
@@ -23,7 +31,7 @@ fn main() -> FSResult<()>  {
 	config.acl = fuser::SessionACL::RootAndOwner;
 
 	// Mount (blocking call)
-	mount(fs, "/tmp/ffs", &config)?;
+	mount(fs, args[1].as_str(), &config)?;
 
 	Ok(())
 }

@@ -4,18 +4,35 @@ use fuser::{
 	Errno, FileAttr, FileHandle, FileType, Filesystem, INodeNo, ReplyAttr, LockOwner, 
 	ReplyDirectory, ReplyEntry, Request, Generation, TimeOrNow, BsdFileFlags, WriteFlags,
 	ReplyData, ReplyOpen, ReplyEmpty, OpenFlags, AccessFlags, FopenFlags, ReplyWrite,
+	KernelConfig, ReplyStatfs, RenameFlags, ReplyCreate,
 };
 
 use std::{
 	ffi::OsStr,
 	time::{Duration, SystemTime},
 	path::Path,
+	io,
 };
 
 use super::fuse_ffs::{FuseFFS, FuseFFSInner};
 use crate::device::block_device::BlockDevice;
 
 impl<D: BlockDevice + Send + 'static> Filesystem for FuseFFS<D> {
+
+	fn init(&mut self, req: &Request, config: &mut KernelConfig) -> io::Result<()> {
+		println!("FuseFFS - init - start");
+		self.init_(req, config)
+	}
+	fn destroy(&mut self) {
+		println!("FuseFFS - destroy - start");
+		self.destroy_();
+	}
+	fn statfs(&self, req: &Request, ino: INodeNo, reply: ReplyStatfs) {
+		println!("FuseFFS - statfs - start");
+		self.statfs_(req, ino, reply);
+	}
+	
+
 	// ATTRIBUTE OPERATIONS
 
 	fn getattr(&self, req: &Request, ino: INodeNo, fh: Option<FileHandle>, reply: ReplyAttr) {
@@ -53,6 +70,14 @@ impl<D: BlockDevice + Send + 'static> Filesystem for FuseFFS<D> {
 		println!("FuseFFS - rmdir - start");
 		self.rmdir_(req, parent, name, reply);
 	}
+	fn fsyncdir(&self, req: &Request, ino: INodeNo, fh: FileHandle, datasync: bool, reply: ReplyEmpty) {
+		println!("FuseFFS - fsyncdir - start");
+		self.fsyncdir_(req, ino, fh, datasync, reply);
+	}
+	fn releasedir(&self, req: &Request, ino: INodeNo, fh: FileHandle, flags: OpenFlags, reply: ReplyEmpty) {
+		println!("FuseFFS - releasedir - start");
+		self.releasedir_(req, ino, fh, flags, reply);
+	}
 
 	// LINK OPERATIONS
 
@@ -86,6 +111,14 @@ impl<D: BlockDevice + Send + 'static> Filesystem for FuseFFS<D> {
 		println!("FuseFFS - link - start");
 		self.link_(req, ino, newparent, newname, reply);
 	}
+	fn rename(&self, req: &Request, parent: INodeNo, name: &OsStr, newparent: INodeNo, newname: &OsStr, flags: RenameFlags, reply: ReplyEmpty) {
+		println!("FuseFFS - rename - start");
+		self.rename_(req, parent, name, newparent, newname, flags, reply);
+	}
+	fn create(&self, req: &Request, parent: INodeNo, name: &OsStr, mode: u32, umask: u32, flags: i32, reply: ReplyCreate) {
+		println!("FuseFFS - create - start");
+		self.create_(req, parent, name, mode, umask, flags, reply);
+	}
 
 	// FILE IO OPERATIONS
 
@@ -100,5 +133,17 @@ impl<D: BlockDevice + Send + 'static> Filesystem for FuseFFS<D> {
 	fn write(&self, req: &Request, ino: INodeNo, fh: FileHandle, offset: u64, data: &[u8], write_flags: WriteFlags, flags: OpenFlags, lock_owner: Option<LockOwner>, reply: ReplyWrite) {
 		println!("FuseFFS - write - start");
 		self.write_(req, ino, fh, offset, data, write_flags, flags, lock_owner, reply);
+	}
+	fn flush(&self, req: &Request, ino: INodeNo, fh: FileHandle, lock_owner: LockOwner, reply: ReplyEmpty) {
+		println!("FuseFFS - flush - start");
+		self.flush_(req, ino, fh, lock_owner, reply);
+	}
+	fn release(&self, req: &Request, ino: INodeNo, fh: FileHandle, flags: OpenFlags, lock_owner: Option<LockOwner>, flush: bool, reply: ReplyEmpty) {
+		println!("FuseFFS - release - start");
+		self.release_(req, ino, fh, flags, lock_owner, flush, reply);
+	}
+	fn fsync(&self, req: &Request, ino: INodeNo, fh: FileHandle, datasync: bool, reply: ReplyEmpty) {
+		println!("FuseFFS - fsync - start");
+		self.fsync_(req, ino, fh, datasync, reply);
 	}
 }

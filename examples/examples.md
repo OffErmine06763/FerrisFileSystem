@@ -32,7 +32,7 @@ The currently available examples are
 
 On LINUX only, with fuse feature enabled.
 
-    cargo run --example fuse_demo --features fuse
+    cargo run --example fuse_demo --features fuse <path>
 
-Creates a temporary device and mounts it at `/tmp/ffs/` (`mkdir -p /tmp/ffs`).  
+Creates a temporary device and mounts it at the specified path (e.g. `mkdir -p /tmp/ffs`).  
 If it's not un-mounted automatically, run `fusermount3 -u /tmp/ffs`
